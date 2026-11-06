@@ -122,3 +122,14 @@ test('Календарь: ежемесячный платёж, конец мес
   const f = forecast(500, occ, arts);
   assert.deepEqual(f.map(x => x.balance), [400, 1400, 1300, 1200]);
 });
+
+test('рентабельность: общие расходы нескольких филиалов суммируются', () => {
+  const objs = [{ id: 1, name: 'Все объекты', is_common: true }, { id: 2, name: 'Все объекты', is_common: true }, { id: 3, name: 'Заказ', is_common: false }];
+  const ops = [
+    { article_id: 1, object_id: 3, period: '2026-11-01', amount: 1000 },
+    { article_id: 3, object_id: 1, period: '2026-11-01', amount: 100 },
+    { article_id: 3, object_id: 2, period: '2026-11-01', amount: 50 },
+  ];
+  const r = profitability({ ops, arts, objects: objs, from: '2026-11', to: '2026-11' });
+  assert.equal(r.common.other, 150); assert.equal(r.total.profit, 850);
+});

@@ -1,5 +1,5 @@
 // Слой данных. Реальная реализация поверх Supabase; в тестах подменяется через window.__API__
-const T = { objects: 'cl_objects', accounts: 'cl_accounts', articles: 'cl_articles', ops: 'cl_operations', planned: 'cl_planned', members: 'cl_members' };
+const T = { objects: 'cl_objects', accounts: 'cl_accounts', articles: 'cl_articles', ops: 'cl_operations', planned: 'cl_planned', members: 'cl_members', branches: 'cl_branches', owners: 'cl_branch_owners' };
 
 export function createApi() {
   const cfg = window.CL_CONFIG || {};

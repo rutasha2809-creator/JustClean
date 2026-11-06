@@ -144,8 +144,9 @@ export function profitability({ ops, arts, objects, from, to }) {
     return { id, name, common, revenue: r2(r.revenue), direct: r2(r.direct), margin, other: r2(-r.other), profit, rentab: r.revenue ? r2(profit / r.revenue * 100) : null };
   };
   const list = objects.filter(o => !o.is_common && by[o.id]).map(o => mk(o.id, o.name, false, by[o.id]));
-  const commonObj = objects.find(o => o.is_common);
-  const common = commonObj && by[commonObj.id] ? mk(commonObj.id, commonObj.name + ' (общие расходы)', true, by[commonObj.id]) : null;
+  const commons = objects.filter(o => o.is_common && by[o.id]);
+  const merged = commons.reduce((a, o) => ({ revenue: a.revenue + by[o.id].revenue, direct: a.direct + by[o.id].direct, other: a.other + by[o.id].other }), { revenue: 0, direct: 0, other: 0 });
+  const common = commons.length ? mk(commons[0].id, commons.length > 1 ? 'Общие расходы (все филиалы)' : commons[0].name + ' (общие расходы)', true, merged) : null;
   const all = [...list, ...(common ? [common] : [])];
   const t = all.reduce((s, r) => ({ revenue: s.revenue + r.revenue, direct: s.direct + r.direct, other: s.other + r.other }), { revenue: 0, direct: 0, other: 0 });
   const total = { id: 'total', name: 'Итого по компании', common: false, revenue: r2(t.revenue), direct: r2(t.direct), margin: r2(t.revenue - t.direct), other: r2(t.other), profit: r2(t.revenue - t.direct - t.other), rentab: t.revenue ? r2((t.revenue - t.direct - t.other) / t.revenue * 100) : null };
