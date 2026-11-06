@@ -12,11 +12,12 @@ const parseAmount = v => { const x = Number(String(v).replace(/\s/g, '').replace
 
 const S = {
   user: null, role: null, tab: 'ops', refTab: 'objects',
-  objects: [], accounts: [], articles: [], ops: [], planned: [], members: [],
+  objects: [], accounts: [], articles: [], ops: [], planned: [], members: [], branches: [], owners: [], branch: '',
   f: { month: '', object: '', account: '', article: '', q: '', limit: 200 },
   rep: { from: `${new Date().getFullYear()}-01`, to: ym(todayStr()), object: '', mode: 'months' },
   prof: { from: `${new Date().getFullYear()}-01`, to: ym(todayStr()) },
   cal: { days: 60 },
+  cons: { from: `${new Date().getFullYear()}-01`, to: ym(todayStr()) },
 };
 const isEditor = () => S.role === 'editor';
 const byId = (list, id) => list.find(x => x.id === id);
@@ -51,15 +52,24 @@ async function run(fn, okMsg) {
 
 /* ---------- загрузка ---------- */
 async function reload() {
-  const [objects, accounts, articles, ops, planned] = await Promise.all(['objects', 'accounts', 'articles', 'ops', 'planned'].map(t => api.load(t)));
-  Object.assign(S, { objects, accounts, articles, ops, planned });
+  const [objects, accounts, articles, ops, planned, branches, owners] = await Promise.all(['objects', 'accounts', 'articles', 'ops', 'planned', 'branches', 'owners'].map(t => api.load(t)));
+  Object.assign(S, { objects, accounts, articles, ops, planned, branches, owners });
+  if (S.branch && !byId(S.branches, +S.branch)) S.branch = '';
   S.articles.sort((a, b) => a.sort - b.sort || a.id - b.id);
   if (isEditor()) S.members = await api.loadMembers();
 }
 const activeArts = () => S.articles.filter(a => a.active);
 const artName = id => byId(S.articles, id)?.name || '?';
-const objName = id => byId(S.objects, id)?.name || '?';
-const accName = id => (id ? byId(S.accounts, id)?.name || '?' : '');
+const brName = id => byId(S.branches, id)?.name || '?';
+const activeBranches = () => S.branches.filter(b => b.active);
+const multi = () => !S.branch && activeBranches().length > 1;
+const sfx = o => (o && multi() ? ` · ${brName(o.branch_id)}` : '');
+const inBr = x => !S.branch || String(x.branch_id) === S.branch;
+const sObjects = () => S.objects.filter(inBr), sAccounts = () => S.accounts.filter(inBr), sOps = () => S.ops.filter(inBr), sPlanned = () => S.planned.filter(inBr);
+const labeled = list => list.map(o => ({ ...o, name: o.name + sfx(o) }));
+const objName = id => { const o = byId(S.objects, id); return o ? o.name + sfx(o) : '?'; };
+const accName = id => { if (!id) return ''; const a = byId(S.accounts, id); return a ? a.name + sfx(a) : '?'; };
+const saveBranch = () => { try { localStorage.setItem('cl_branch', S.branch); } catch { } };
 
 /* ---------- старт и вход ---------- */
 async function boot() {
@@ -68,6 +78,7 @@ async function boot() {
   S.user = s;
   S.role = await api.register();
   if (S.role === 'pending') return renderPending();
+  try { S.branch = localStorage.getItem('cl_branch') || ''; } catch { }
   try { await reload(); } catch (e) { $('#app').innerHTML = `<main><div class="card">Не удалось загрузить данные: ${esc(e.message)}</div></main>`; return; }
   render();
 }
@@ -89,23 +100,25 @@ function renderPending() {
 }
 
 /* ---------- каркас ---------- */
-const TABS = [['ops', 'Операции'], ['dds', 'ДДС'], ['opu', 'ОПУ'], ['prof', 'Рентабельность'], ['cal', 'Платёжный календарь'], ['ref', 'Справочники']];
+const TABS = [['ops', 'Операции'], ['dds', 'ДДС'], ['opu', 'ОПУ'], ['prof', 'Рентабельность'], ['own', 'Собственники'], ['cons', 'Свод по филиалам'], ['cal', 'Платёжный календарь'], ['ref', 'Справочники']];
 function render() {
-  const view = { ops: viewOps, dds: viewDds, opu: viewOpu, prof: viewProf, cal: viewCal, ref: viewRef }[S.tab];
+  const view = { ops: viewOps, dds: viewDds, opu: viewOpu, prof: viewProf, own: viewOwn, cons: viewCons, cal: viewCal, ref: viewRef }[S.tab];
   $('#app').innerHTML = `<header><div class="bar"><span class="logo">Управленческий учёт</span>
     <nav>${TABS.map(([k, t]) => `<button data-tab="${k}" class="${S.tab === k ? 'on' : ''}">${t}</button>`).join('')}</nav>
+    <select id="branch-sel" class="branchsel" title="Филиал"><option value="">Все филиалы</option>${opt(activeBranches(), S.branch)}</select>
     <span class="who">${esc(S.user.email)} <span class="badge ${isEditor() ? '' : 'off'}">${isEditor() ? 'редактор' : 'просмотр'}</span><button class="link" id="out">Выйти</button></span></div></header>
     <main>${view()}</main>`;
   document.querySelectorAll('nav [data-tab]').forEach(b => (b.onclick = () => { S.tab = b.dataset.tab; render(); }));
   $('#out').onclick = async () => { await api.signOut(); S.user = null; renderLogin(); };
-  ({ ops: bindOps, dds: bindRep, opu: bindRep, prof: bindProf, cal: bindCal, ref: bindRef }[S.tab])();
+  $('#branch-sel').onchange = () => { S.branch = $('#branch-sel').value; saveBranch(); Object.assign(S.f, { object: '', account: '', limit: 200 }); S.rep.object = ''; render(); };
+  ({ ops: bindOps, dds: bindRep, opu: bindRep, prof: bindProf, own: () => { }, cons: bindCons, cal: bindCal, ref: bindRef }[S.tab])();
 }
 const opt = (list, sel, label = x => x.name, empty = null) => (empty != null ? `<option value="">${esc(empty)}</option>` : '') + list.map(x => `<option value="${x.id}" ${String(x.id) === String(sel) ? 'selected' : ''}>${esc(label(x))}</option>`).join('');
 
 /* ---------- Операции ---------- */
 function filteredOps() {
   const f = S.f, q = f.q.trim().toLowerCase();
-  return S.ops.filter(o => {
+  return sOps().filter(o => {
     if (f.month && ym(o.op_date) !== f.month && ym(o.period) !== f.month) return false;
     if (f.object && String(o.object_id) !== f.object) return false;
     if (f.account && String(o.account_id) !== f.account) return false;
@@ -115,14 +128,14 @@ function filteredOps() {
   }).sort((a, b) => (b.op_date || b.period).localeCompare(a.op_date || a.period) || b.id - a.id);
 }
 function viewOps() {
-  const list = filteredOps(), months = [...new Set(S.ops.flatMap(o => [ym(o.op_date), ym(o.period)]).filter(Boolean))].sort().reverse();
-  const issues = checks(S.ops, S.articles), imb = internalImbalance(S.ops, S.articles);
+  const list = filteredOps(), months = [...new Set(sOps().flatMap(o => [ym(o.op_date), ym(o.period)]).filter(Boolean))].sort().reverse();
+  const issues = checks(sOps(), S.articles), imb = internalImbalance(sOps(), S.articles);
   let inc = 0, exp = 0;
   list.forEach(o => { const a = byId(S.articles, o.article_id); if (!o.op_date || a.dds_section === 'internal') return; a.kind === 'income' ? (inc += Number(o.amount)) : (exp += Number(o.amount)); });
   return `<div class="card"><div class="toolbar">
     <label>Месяц<select id="f-month"><option value="">Все</option>${months.map(m => `<option value="${m}" ${S.f.month === m ? 'selected' : ''}>${monthLabel(m)}</option>`).join('')}</select></label>
-    <label>Объект<select id="f-object">${opt(S.objects, S.f.object, undefined, 'Все')}</select></label>
-    <label>Счёт<select id="f-account">${opt(S.accounts, S.f.account, undefined, 'Все')}</select></label>
+    <label>Объект<select id="f-object">${opt(sObjects(), S.f.object, o => o.name + sfx(o), 'Все')}</select></label>
+    <label>Счёт<select id="f-account">${opt(sAccounts(), S.f.account, o => o.name + sfx(o), 'Все')}</select></label>
     <label>Статья<select id="f-article">${opt(S.articles, S.f.article, undefined, 'Все')}</select></label>
     <label>Поиск<input id="f-q" value="${esc(S.f.q)}" placeholder="контрагент, комментарий"></label>
     <span class="spacer"></span>${isEditor() ? '<button class="btn primary" id="add-op">Добавить операцию</button>' : ''}</div>
@@ -146,18 +159,23 @@ function bindOps() {
 }
 
 let lastPreset = {};
+const refOpts = (list, brId, sel, empty) => opt(list.filter(x => String(x.branch_id) === String(brId) && (x.active || x.id === sel)), sel, undefined, empty);
+const defaultBranch = (p = {}) => +(p.branch_id || S.branch || lastPreset.branch_id || activeBranches()[0]?.id || 0);
+const branchField = (id, sel, disabled) => `<label class="full">Филиал<select id="${id}" ${disabled ? 'disabled' : ''}>${opt(S.branches.filter(b => b.active || b.id === sel), sel)}</select></label>`;
 function openOpForm(op, preset = null, afterSave = null) {
   const p = preset || {};
   const isNew = !op;
+  const brInit = op ? op.branch_id : defaultBranch(p);
   const init = op || { op_date: p.op_date ?? lastPreset.op_date ?? todayStr(), account_id: p.account_id ?? lastPreset.account_id ?? '', article_id: p.article_id ?? '', object_id: p.object_id ?? lastPreset.object_id ?? '', period: p.period ?? null, amount: p.amount ?? '', counterparty: p.counterparty ?? '', comment: p.comment ?? '' };
   let mode = op && !op.op_date ? 'accrual' : 'pay';
   let periodTouched = !!op && !!op.period;
   const m = openModal(`<h3>${isNew ? 'Новая операция' : 'Изменить операцию'}</h3><div class="form">
     <div class="full seg"><label><input type="radio" name="mode" value="pay"> Оплата</label><label><input type="radio" name="mode" value="accrual"> Начисление без оплаты</label></div>
+    ${branchField('o-br', brInit, !isNew)}
     <label data-pay>Дата оплаты<input type="date" id="o-date" value="${esc(init.op_date || '')}"></label>
-    <label data-pay>Счёт<select id="o-acc">${opt(S.accounts.filter(a => a.active || a.id === init.account_id), init.account_id, undefined, 'Выберите')}</select></label>
+    <label data-pay>Счёт<select id="o-acc">${refOpts(S.accounts, brInit, init.account_id, 'Выберите')}</select></label>
     <label class="full">Статья<select id="o-art"></select></label>
-    <label>Объект<select id="o-obj">${opt(S.objects.filter(o => o.active || o.id === init.object_id), init.object_id, undefined, 'Выберите')}</select></label>
+    <label>Объект<select id="o-obj">${refOpts(S.objects, brInit, init.object_id, 'Выберите')}</select></label>
     <label>Период (месяц)<input type="month" id="o-per" value="${init.period ? ym(init.period) : ''}"></label>
     <label>Сумма<input id="o-amt" inputmode="decimal" value="${init.amount === '' ? '' : String(init.amount).replace('.', ',')}"></label>
     <label>Контрагент<input id="o-cp" value="${esc(init.counterparty)}"></label>
@@ -180,6 +198,7 @@ function openOpForm(op, preset = null, afterSave = null) {
   };
   m.querySelectorAll('[name=mode]').forEach(r => { r.checked = r.value === mode; r.onchange = () => { mode = r.value; artSel(); sync(); }; });
   artSel(); sync();
+  $('#o-br', m).onchange = () => { const b = +$('#o-br', m).value; $('#o-acc', m).innerHTML = refOpts(S.accounts, b, null, 'Выберите'); $('#o-obj', m).innerHTML = refOpts(S.objects, b, null, 'Выберите'); };
   $('#o-art', m).onchange = sync; $('#o-date', m).onchange = sync; $('#o-per', m).oninput = () => (periodTouched = true);
   m.querySelector('[data-cancel]').onclick = closeModal;
   const collect = () => {
@@ -194,13 +213,13 @@ function openOpForm(op, preset = null, afterSave = null) {
     if (mode === 'accrual' && !per) return err('Укажите период начисления');
     if (!(amount > 0)) return err('Введите сумму больше нуля');
     $('#o-err', m).textContent = '';
-    return { op_date: mode === 'pay' ? date : null, account_id: mode === 'pay' ? acc : null, article_id, object_id, period: a.opu_group && per ? per + '-01' : null, amount: r2(amount), counterparty: $('#o-cp', m).value.trim() || null, comment: $('#o-cm', m).value.trim() || null };
+    return { branch_id: +$('#o-br', m).value, op_date: mode === 'pay' ? date : null, account_id: mode === 'pay' ? acc : null, article_id, object_id, period: a.opu_group && per ? per + '-01' : null, amount: r2(amount), counterparty: $('#o-cp', m).value.trim() || null, comment: $('#o-cm', m).value.trim() || null };
   };
   const save = again => async () => {
     const row = collect(); if (!row) return;
     const ok = await run(async () => { if (isNew) await api.insert('ops', row); else await api.update('ops', op.id, row); if (afterSave) await afterSave(row); }, isNew ? 'Операция внесена' : 'Изменения сохранены');
     if (!ok) return;
-    lastPreset = { op_date: row.op_date, account_id: row.account_id, object_id: row.object_id };
+    lastPreset = { op_date: row.op_date, account_id: row.account_id, object_id: row.object_id, branch_id: row.branch_id };
     closeModal(); if (again) openOpForm(null);
   };
   m.querySelector('[data-save]').onclick = save(false);
@@ -212,7 +231,7 @@ function repControls(withBalance) {
   const r = S.rep;
   return `<div class="toolbar"><label>С<input type="month" id="r-from" value="${r.from}"></label><label>По<input type="month" id="r-to" value="${r.to}"></label>
     <label>Разрез<select id="r-mode"><option value="months" ${r.mode === 'months' ? 'selected' : ''}>По месяцам</option><option value="objects" ${r.mode === 'objects' ? 'selected' : ''}>По объектам</option></select></label>
-    <label ${r.mode === 'objects' ? 'class="hidden"' : ''}>Объект<select id="r-obj"><option value="">Свод по всем</option>${opt(S.objects, r.object)}</select></label></div>`;
+    <label ${r.mode === 'objects' ? 'class="hidden"' : ''}>Объект<select id="r-obj"><option value="">Свод по всем</option>${opt(sObjects(), r.object, o => o.name + sfx(o))}</select></label></div>`;
 }
 function matrixTable(rep) {
   const cell = (row, v) => { const pc = row.type === 'percent'; return `<td class="num ${v < 0 ? 'neg' : ''}">${v == null ? '' : pc ? (v === 0 ? '-' : fmt(v) + '%') : fmt(v)}</td>`; };
@@ -222,7 +241,7 @@ function matrixTable(rep) {
 }
 function repArgs() {
   const r = S.rep;
-  return { ops: S.ops, arts: S.articles, objects: S.objects, accounts: S.accounts, from: r.from, to: r.to <= r.from ? r.from : r.to, objectId: r.object ? +r.object : null, mode: r.mode };
+  return { ops: sOps(), arts: S.articles, objects: labeled(sObjects()), accounts: sAccounts(), from: r.from, to: r.to <= r.from ? r.from : r.to, objectId: r.object ? +r.object : null, mode: r.mode };
 }
 function viewDds() {
   const rep = ddsReport(repArgs());
@@ -240,7 +259,7 @@ function bindRep() {
 /* ---------- Рентабельность ---------- */
 function viewProf() {
   const p = S.prof, to = p.to < p.from ? p.from : p.to;
-  const d = profitability({ ops: S.ops, arts: S.articles, objects: S.objects, from: p.from, to });
+  const d = profitability({ ops: sOps(), arts: S.articles, objects: labeled(sObjects()), from: p.from, to });
   const row = (r, cls = '') => `<tr class="${cls}"><td>${esc(r.name)}</td><td class="num">${fmt(r.revenue)}</td><td class="num">${fmt(r.direct)}</td><td class="num ${r.margin < 0 ? 'neg' : ''}">${fmt(r.margin)}</td><td class="num">${fmt(r.other)}</td><td class="num ${r.profit < 0 ? 'neg' : 'pos'}">${fmt(r.profit)}</td><td class="num ${r.rentab < 0 ? 'neg' : ''}">${r.rentab == null ? '' : fmt(r.rentab) + '%'}</td></tr>`;
   return `<div class="card"><h3 style="margin-top:0">Рентабельность по объектам</h3><div class="toolbar"><label>С<input type="month" id="p-from" value="${p.from}"></label><label>По<input type="month" id="p-to" value="${p.to}"></label></div>
   <div class="tablewrap"><table><thead><tr><th>Объект</th><th class="num">Выручка</th><th class="num">Прямые расходы</th><th class="num">Маржа</th><th class="num">Прочие расходы</th><th class="num">Прибыль</th><th class="num">Рентабельность</th></tr></thead><tbody>
@@ -248,11 +267,53 @@ function viewProf() {
 }
 function bindProf() { ['from', 'to'].forEach(k => ($('#p-' + k).onchange = () => { S.prof[k] = $('#p-' + k).value; render(); })); }
 
+/* ---------- Собственники ---------- */
+const sumOps = (ops, artId, from = null, to = null) => r2(ops.filter(o => o.op_date && o.article_id === artId && (!from || ym(o.op_date) >= from) && (!to || ym(o.op_date) <= to)).reduce((t, o) => t + Number(o.amount), 0));
+const branchProfit = (b, from = '2000-01', to = '2999-12') => profitability({ ops: S.ops.filter(o => o.branch_id === b.id), arts: S.articles, objects: S.objects.filter(o => o.branch_id === b.id), from, to }).total;
+function viewOwn() {
+  const brs = activeBranches().filter(b => !S.branch || String(b.id) === S.branch);
+  const blocks = brs.map(b => {
+    const ops = S.ops.filter(o => o.branch_id === b.id), prof = branchProfit(b).profit, owners = S.owners.filter(w => w.branch_id === b.id && w.active);
+    let tAcc = 0, tPaid = 0, tIn = 0;
+    const rows = owners.map(w => {
+      const acc = r2(prof * Number(w.share) / 100), paid = w.dividend_article_id ? sumOps(ops, w.dividend_article_id) : 0, inn = w.contribution_article_id ? sumOps(ops, w.contribution_article_id) : 0;
+      tAcc += acc; tPaid += paid; tIn += inn;
+      return `<tr><td>${esc(w.name)}</td><td class="num">${fmt(Number(w.share))}%</td><td class="num">${fmt(acc)}</td><td class="num">${fmt(paid)}</td><td class="num ${acc - paid < 0 ? 'neg' : ''}">${fmt(r2(acc - paid))}</td><td class="num">${fmt(inn)}</td></tr>`;
+    });
+    return `<div class="card"><h3 style="margin-top:0">${esc(b.name)}</h3><div class="summary"><span>Прибыль филиала: <b class="${prof < 0 ? 'neg' : ''}">${fmt(prof) === '-' ? '0' : fmt(prof)}</b></span></div>
+    <div class="tablewrap"><table><thead><tr><th>Собственник</th><th class="num">Доля</th><th class="num">Начислено</th><th class="num">Выплачено дивидендов</th><th class="num">Остаток к выплате</th><th class="num">Вложено</th></tr></thead><tbody>
+    ${rows.join('') || '<tr><td colspan="6" class="muted">Собственники не заданы</td></tr>'}${owners.length > 1 ? `<tr class="total"><td>Итого</td><td></td><td class="num">${fmt(r2(tAcc))}</td><td class="num">${fmt(r2(tPaid))}</td><td class="num">${fmt(r2(tAcc - tPaid))}</td><td class="num">${fmt(r2(tIn))}</td></tr>` : ''}</tbody></table></div></div>`;
+  });
+  return blocks.join('') || '<div class="card muted">Филиалов нет</div>';
+}
+
+/* ---------- Свод по филиалам ---------- */
+const nextMonth01 = k => { let [y, m] = k.split('-').map(Number); m++; if (m > 12) { m = 1; y++; } return `${y}-${String(m).padStart(2, '0')}-01`; };
+function consData() {
+  const c = S.cons, to = c.to < c.from ? c.from : c.to, end = nextMonth01(to);
+  return activeBranches().map(b => {
+    const ops = S.ops.filter(o => o.branch_id === b.id), t = branchProfit(b, c.from, to);
+    const divIds = new Set(S.owners.filter(w => w.branch_id === b.id && w.dividend_article_id).map(w => w.dividend_article_id));
+    const div = r2([...divIds].reduce((s, id) => s + sumOps(ops, id, c.from, to), 0));
+    const cash = balanceAt(end, S.accounts.filter(a => a.branch_id === b.id), ops, S.articles);
+    return { name: b.name, revenue: t.revenue, direct: t.direct, other: t.other, profit: t.profit, rentab: t.revenue ? r2(t.profit / t.revenue * 100) : null, div, cash };
+  });
+}
+function viewCons() {
+  const c = S.cons, rows = consData();
+  const tot = rows.reduce((a, r) => ({ revenue: a.revenue + r.revenue, direct: a.direct + r.direct, other: a.other + r.other, profit: a.profit + r.profit, div: a.div + r.div, cash: a.cash + r.cash }), { revenue: 0, direct: 0, other: 0, profit: 0, div: 0, cash: 0 });
+  const line = (r, cls = '') => `<tr class="${cls}"><td>${esc(r.name)}</td><td class="num">${fmt(r2(r.revenue))}</td><td class="num">${fmt(r2(r.direct))}</td><td class="num">${fmt(r2(r.other))}</td><td class="num ${r.profit < 0 ? 'neg' : 'pos'}">${fmt(r2(r.profit))}</td><td class="num">${r.revenue ? fmt(r2(r.profit / r.revenue * 100)) + '%' : ''}</td><td class="num">${fmt(r2(r.div))}</td><td class="num ${r.cash < 0 ? 'neg' : ''}">${fmt(r2(r.cash)) === '-' ? '0' : fmt(r2(r.cash))}</td></tr>`;
+  return `<div class="card"><h3 style="margin-top:0">Финансовый результат по филиалам</h3><div class="toolbar"><label>С<input type="month" id="k-from" value="${c.from}"></label><label>По<input type="month" id="k-to" value="${c.to}"></label></div>
+  <div class="tablewrap"><table><thead><tr><th>Филиал</th><th class="num">Выручка</th><th class="num">Прямые расходы</th><th class="num">Прочие расходы</th><th class="num">Прибыль</th><th class="num">Рентабельность</th><th class="num">Выплачено дивидендов</th><th class="num">Остаток денег на конец периода</th></tr></thead><tbody>
+  ${rows.map(r => line(r)).join('')}${line({ name: 'Итого по JustClean', ...tot }, 'total')}</tbody></table></div></div>`;
+}
+function bindCons() { ['from', 'to'].forEach(k => ($('#k-' + k).onchange = () => { S.cons[k] = $('#k-' + k).value; render(); })); }
+
 /* ---------- Платёжный календарь ---------- */
 function viewCal() {
   const today = todayStr(), horizon = addDays(today, S.cal.days);
-  const occ = expandPlanned(S.planned, '0001-01-01', horizon);
-  const start = balanceAt(addDays(today, 1), S.accounts, S.ops, S.articles);
+  const occ = expandPlanned(sPlanned(), '0001-01-01', horizon);
+  const start = balanceAt(addDays(today, 1), sAccounts(), sOps(), S.articles);
   const rows = forecast(start, occ, S.articles);
   return `<div class="card"><div class="toolbar"><label>Горизонт<select id="c-days">${[30, 60, 90, 180].map(d => `<option value="${d}" ${S.cal.days === d ? 'selected' : ''}>${d} дней</option>`).join('')}</select></label>
     <span class="spacer"></span>${isEditor() ? '<button class="btn primary" id="add-plan">Добавить платёж</button>' : ''}</div>
@@ -273,23 +334,26 @@ function bindCal() {
   }));
   document.querySelectorAll('[data-paid]').forEach(b => (b.onclick = () => {
     const [id, date] = b.dataset.paid.split('|'), p = byId(S.planned, +id), a = byId(S.articles, p.article_id);
-    openOpForm(null, { op_date: date, account_id: p.account_id || '', article_id: p.article_id, object_id: p.object_id, amount: p.amount, comment: p.comment || '', period: a.opu_group ? date.slice(0, 7) + '-01' : null },
+    openOpForm(null, { branch_id: p.branch_id, op_date: date, account_id: p.account_id || '', article_id: p.article_id, object_id: p.object_id, amount: p.amount, comment: p.comment || '', period: a.opu_group ? date.slice(0, 7) + '-01' : null },
       () => api.update('planned', p.id, { done_dates: [...(p.done_dates || []), date] }));
   }));
 }
 function openPlanForm(p) {
+  const brInit = p ? p.branch_id : defaultBranch();
   const init = p || { plan_date: todayStr(), article_id: '', object_id: '', account_id: '', amount: '', comment: '', recurrence: 'none', until: null };
   const m = openModal(`<h3>${p ? 'Изменить платёж' : 'Новый платёж'}</h3><div class="form">
+    ${branchField('p-br', brInit, !!p)}
     <label>Дата<input type="date" id="p-date" value="${esc(init.plan_date)}"></label>
     <label>Сумма<input id="p-amt" inputmode="decimal" value="${init.amount === '' ? '' : String(init.amount).replace('.', ',')}"></label>
     <label class="full">Статья<select id="p-art">${opt(activeArts(), init.article_id, undefined, 'Выберите')}</select></label>
-    <label>Объект<select id="p-obj">${opt(S.objects.filter(o => o.active), init.object_id, undefined, 'Выберите')}</select></label>
-    <label>Счёт<select id="p-acc">${opt(S.accounts.filter(a => a.active), init.account_id, undefined, 'Не указан')}</select></label>
+    <label>Объект<select id="p-obj">${refOpts(S.objects, brInit, init.object_id, 'Выберите')}</select></label>
+    <label>Счёт<select id="p-acc">${refOpts(S.accounts, brInit, init.account_id, 'Не указан')}</select></label>
     <label class="full">Комментарий<input id="p-cm" value="${esc(init.comment)}"></label>
     <label>Повтор<select id="p-rec"><option value="none" ${init.recurrence === 'none' ? 'selected' : ''}>Разовый</option><option value="monthly" ${init.recurrence === 'monthly' ? 'selected' : ''}>Ежемесячно</option></select></label>
     <label id="p-until-l">Повторять до<input type="month" id="p-until" value="${init.until ? ym(init.until) : ''}"></label>
     <div class="err" id="p-err"></div></div><div class="actions"><button class="btn" data-cancel>Отмена</button><button class="btn primary" data-save>Сохранить</button></div>`);
   const sync = () => $('#p-until-l', m).classList.toggle('hidden', $('#p-rec', m).value !== 'monthly');
+  $('#p-br', m).onchange = () => { const b = +$('#p-br', m).value; $('#p-acc', m).innerHTML = refOpts(S.accounts, b, null, 'Не указан'); $('#p-obj', m).innerHTML = refOpts(S.objects, b, null, 'Выберите'); };
   $('#p-rec', m).onchange = sync; sync();
   m.querySelector('[data-cancel]').onclick = closeModal;
   m.querySelector('[data-save]').onclick = async () => {
@@ -298,7 +362,7 @@ function openPlanForm(p) {
     if (!date) return err('Укажите дату'); if (!$('#p-art', m).value) return err('Выберите статью'); if (!$('#p-obj', m).value) return err('Выберите объект'); if (!(amount > 0)) return err('Введите сумму больше нуля');
     const rec = $('#p-rec', m).value, u = $('#p-until', m).value;
     let until = null; if (rec === 'monthly' && u) { const [y, mo] = u.split('-').map(Number); until = new Date(Date.UTC(y, mo, 0)).toISOString().slice(0, 10); }
-    const row = { plan_date: date, article_id: +$('#p-art', m).value, object_id: +$('#p-obj', m).value, account_id: $('#p-acc', m).value ? +$('#p-acc', m).value : null, amount: r2(amount), comment: $('#p-cm', m).value.trim() || null, recurrence: rec, until };
+    const row = { branch_id: +$('#p-br', m).value, plan_date: date, article_id: +$('#p-art', m).value, object_id: +$('#p-obj', m).value, account_id: $('#p-acc', m).value ? +$('#p-acc', m).value : null, amount: r2(amount), comment: $('#p-cm', m).value.trim() || null, recurrence: rec, until };
     if (await run(() => (p ? api.update('planned', p.id, row) : api.insert('planned', row)), p ? 'Изменения сохранены' : 'Платёж внесён')) closeModal();
   };
 }
@@ -307,17 +371,20 @@ function openPlanForm(p) {
 const SEC = { operating: 'Операционная', investing: 'Инвестиционная', financing: 'Финансовая', internal: 'Перемещения (не в потоке)' };
 const OPU_GROUPS = ['Выручка', 'Прямые расходы', 'Коммерческие и агентские', 'Административные', 'Прочие доходы и расходы', 'Налоги'];
 const REFS = {
-  objects: { title: 'Объекты', table: 'objects', cols: [['Название', o => esc(o.name)], ['Юрлицо', o => esc(o.legal_entity)], ['Тип', o => (o.is_common ? 'Общие расходы' : '')]] },
-  accounts: { title: 'Счета', table: 'accounts', cols: [['Название', o => esc(o.name)], ['Остаток на начало', o => fmt(Number(o.opening_balance)) === '-' ? '0' : fmt(Number(o.opening_balance))], ['Дата остатка', o => fmtDate(o.opening_date)]] },
+  objects: { title: 'Объекты', table: 'objects', cols: [['Филиал', o => esc(brName(o.branch_id))], ['Название', o => esc(o.name)], ['Юрлицо', o => esc(o.legal_entity)], ['Тип', o => (o.is_common ? 'Общие расходы' : '')]] },
+  accounts: { title: 'Счета', table: 'accounts', cols: [['Филиал', o => esc(brName(o.branch_id))], ['Название', o => esc(o.name)], ['Остаток на начало', o => fmt(Number(o.opening_balance)) === '-' ? '0' : fmt(Number(o.opening_balance))], ['Дата остатка', o => fmtDate(o.opening_date)]] },
+  branches: { title: 'Филиалы', table: 'branches', cols: [['Название', o => esc(o.name)]] },
+  owners: { title: 'Собственники', table: 'owners', cols: [['Филиал', o => esc(brName(o.branch_id))], ['Собственник', o => esc(o.name)], ['Доля, %', o => fmt(Number(o.share))], ['Статья дивидендов', o => esc(artName(o.dividend_article_id))], ['Статья вложений', o => esc(artName(o.contribution_article_id))]] },
   articles: { title: 'Статьи', table: 'articles', cols: [['Название', o => esc(o.name)], ['Вид', o => (o.kind === 'income' ? 'Доход' : 'Расход')], ['ДДС', o => SEC[o.dds_section]], ['ОПУ', o => esc(o.opu_group || 'не входит')]] },
 };
+const refList = k => ({ objects: sObjects(), accounts: sAccounts(), owners: S.owners.filter(inBr) }[k] || S[REFS[k].table]);
 function viewRef() {
   const tabs = [...Object.entries(REFS).map(([k, v]) => [k, v.title]), ...(isEditor() ? [['access', 'Доступ']] : [])];
   let body;
   if (S.refTab === 'access') {
     body = `<div class="tablewrap"><table><thead><tr><th>Email</th><th>Роль</th><th></th></tr></thead><tbody>${S.members.map(u => `<tr><td>${esc(u.email)}</td><td>${u.user_id === S.user.id ? 'редактор (вы)' : `<select data-role="${u.user_id}"><option value="pending" ${u.role === 'pending' ? 'selected' : ''}>ожидает</option><option value="viewer" ${u.role === 'viewer' ? 'selected' : ''}>просмотр</option><option value="editor" ${u.role === 'editor' ? 'selected' : ''}>редактор</option></select>`}</td><td>${u.user_id === S.user.id ? '' : `<button class="link danger" data-mdel="${u.user_id}">Убрать доступ</button>`}</td></tr>`).join('')}</tbody></table></div>`;
   } else {
-    const R = REFS[S.refTab], list = S[R.table];
+    const R = REFS[S.refTab], list = refList(S.refTab);
     body = `<div class="tablewrap"><table><thead><tr>${R.cols.map(c => `<th>${c[0]}</th>`).join('')}<th>Статус</th><th></th></tr></thead><tbody>${list.map(o => `<tr class="${o.active ? '' : 'muted'}">${R.cols.map(c => `<td>${c[1](o)}</td>`).join('')}<td><span class="badge ${o.active ? '' : 'off'}">${o.active ? 'активен' : 'в архиве'}</span></td><td>${isEditor() ? `<button class="link" data-redit="${o.id}">Изменить</button>${o.is_common ? '' : `<button class="link ${o.active ? 'danger' : ''}" data-rarch="${o.id}">${o.active ? 'В архив' : 'Вернуть'}</button>`}` : ''}</td></tr>`).join('')}</tbody></table></div>`;
   }
   return `<div class="card"><div class="tabs">${tabs.map(([k, t]) => `<button data-reftab="${k}" class="${S.refTab === k ? 'on' : ''}">${t}</button>`).join('')}</div>
@@ -337,9 +404,14 @@ function bindRef() {
 }
 function openRefForm(o) {
   const k = S.refTab, R = REFS[k], isNew = !o;
+  const brSel = `<label class="full">Филиал<select id="x-br" ${isNew ? '' : 'disabled'}>${opt(S.branches.filter(b => b.active || b.id === o?.branch_id), o?.branch_id || defaultBranch())}</select></label>`;
+  const artsOf = kind => activeArts().filter(a => a.kind === kind && a.dds_section === 'financing');
   const fields = {
-    objects: `<label class="full">Название<input id="x-name" value="${esc(o?.name)}"></label><label class="full">Юрлицо<input id="x-legal" value="${esc(o?.legal_entity)}"></label>`,
-    accounts: `<label class="full">Название<input id="x-name" value="${esc(o?.name)}"></label><label>Остаток на начало<input id="x-bal" inputmode="decimal" value="${o ? String(o.opening_balance).replace('.', ',') : '0'}"></label><label>Дата остатка<input type="date" id="x-date" value="${o?.opening_date || '2026-01-01'}"></label>`,
+    branches: `<label class="full">Название<input id="x-name" value="${esc(o?.name)}"></label>`,
+    owners: `${brSel}<label class="full">Собственник<input id="x-name" value="${esc(o?.name)}"></label><label>Доля, %<input id="x-share" inputmode="decimal" value="${o ? String(o.share).replace('.', ',') : '50'}"></label>
+      <label class="full">Статья дивидендов<select id="x-div">${opt(artsOf('expense'), o?.dividend_article_id, undefined, 'Выберите')}</select></label><label class="full">Статья вложений<select id="x-con">${opt(artsOf('income'), o?.contribution_article_id, undefined, 'Выберите')}</select></label>`,
+    objects: `${brSel}<label class="full">Название<input id="x-name" value="${esc(o?.name)}"></label><label class="full">Юрлицо<input id="x-legal" value="${esc(o?.legal_entity)}"></label>`,
+    accounts: `${brSel}<label class="full">Название<input id="x-name" value="${esc(o?.name)}"></label><label>Остаток на начало<input id="x-bal" inputmode="decimal" value="${o ? String(o.opening_balance).replace('.', ',') : '0'}"></label><label>Дата остатка<input type="date" id="x-date" value="${o?.opening_date || '2026-01-01'}"></label>`,
     articles: `<label class="full">Название<input id="x-name" value="${esc(o?.name)}"></label>
       <label>Вид<select id="x-kind"><option value="income" ${o?.kind === 'income' ? 'selected' : ''}>Доход</option><option value="expense" ${!o || o.kind === 'expense' ? 'selected' : ''}>Расход</option></select></label>
       <label>Раздел ДДС<select id="x-sec">${Object.entries(SEC).map(([v, t]) => `<option value="${v}" ${o?.dds_section === v ? 'selected' : ''}>${t}</option>`).join('')}</select></label>
@@ -350,10 +422,13 @@ function openRefForm(o) {
   m.querySelector('[data-save]').onclick = async () => {
     const err = t => ($('#x-err', m).textContent = t), name = $('#x-name', m).value.trim();
     if (!name) return err('Введите название');
-    if (S[R.table].some(x => x.name.toLowerCase() === name.toLowerCase() && x.id !== o?.id)) return err('Такое название уже есть');
+    const bid = isNew && $('#x-br', m) ? +$('#x-br', m).value : o?.branch_id;
+    if (S[R.table].some(x => x.name.toLowerCase() === name.toLowerCase() && x.id !== o?.id && (k === 'branches' || k === 'articles' || x.branch_id === bid))) return err('Такое название уже есть');
     let row;
-    if (k === 'objects') row = { name, legal_entity: $('#x-legal', m).value.trim() || null };
-    if (k === 'accounts') { const b = parseAmount($('#x-bal', m).value); if (Number.isNaN(b)) return err('Введите остаток числом'); if (!$('#x-date', m).value) return err('Укажите дату остатка'); row = { name, opening_balance: r2(b), opening_date: $('#x-date', m).value }; }
+    if (k === 'branches') row = { name };
+    if (k === 'owners') { const sh = parseAmount($('#x-share', m).value); if (!(sh > 0 && sh <= 100)) return err('Доля должна быть больше 0 и не больше 100'); row = { ...(isNew ? { branch_id: bid } : {}), name, share: r2(sh), dividend_article_id: +$('#x-div', m).value || null, contribution_article_id: +$('#x-con', m).value || null }; }
+    if (k === 'objects') row = { ...(isNew ? { branch_id: bid } : {}), name, legal_entity: $('#x-legal', m).value.trim() || null };
+    if (k === 'accounts') { const b = parseAmount($('#x-bal', m).value); if (Number.isNaN(b)) return err('Введите остаток числом'); if (!$('#x-date', m).value) return err('Укажите дату остатка'); row = { ...(isNew ? { branch_id: bid } : {}), name, opening_balance: r2(b), opening_date: $('#x-date', m).value }; }
     if (k === 'articles') row = { name, kind: $('#x-kind', m).value, dds_section: $('#x-sec', m).value, opu_group: $('#x-opu', m).value || null, ...(isNew ? { sort: 500 } : {}) };
     if (await run(() => (isNew ? api.insert(R.table, row) : api.update(R.table, o.id, row)), isNew ? 'Данные внесены' : 'Изменения сохранены')) closeModal();
   };

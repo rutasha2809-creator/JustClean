@@ -4,7 +4,8 @@ import playwright.sync_api as _pa
 _orig = _pa.Page.inner_text
 def _norm(self,*a,**k): return _orig(self,*a,**k).replace('\u00a0',' ').replace('\u202f',' ')
 _pa.Page.inner_text = _norm
-ROOT = '/tmp/claude-0/-home-claude/eb4f6074-a6a4-5f52-9d37-e4e7fa00f7eb/scratchpad/clean-app'
+import os
+ROOT = os.environ.get('APP_ROOT', os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 srv = subprocess.Popen(['python3','-m','http.server','8765','-d',ROOT],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL); time.sleep(1)
 MOCK = open(ROOT+'/tests/mock-api.js',encoding='utf-8').read()
 URL='http://localhost:8765/index.html'
@@ -121,7 +122,62 @@ with sync_playwright() as pw:
     p4, e4 = new_page(b); p4.click('[data-tab=ref]'); p4.click('[data-reftab=access]')
     p4.select_option('[data-role=u2]','viewer'); p4.wait_for_timeout(300); check('роль владельца изменена, тост', toast(p4)=='Роль изменена')
     p4.click('[data-mdel]'); check('убрать доступ спрашивает подтверждение', 'Убрать доступ' in p4.inner_text('.modal h3')); p4.click('[data-no]')
-    p4.screenshot(path='/tmp/pgt/shot_access.png')
+    p4.screenshot(path='/tmp/shot_access.png')
+
+    # 6. филиалы
+    seedB = {
+      'branches':[{'id':1,'name':'Основной','active':True},{'id':2,'name':'Филиал Б','active':True}],
+      'objects':[{'id':1,'name':'Все объекты','is_common':True,'active':True,'branch_id':1},{'id':2,'name':'Все объекты','is_common':True,'active':True,'branch_id':2},{'id':3,'name':'Заказ 1','is_common':False,'active':True,'branch_id':2},{'id':4,'name':'Борк','is_common':False,'active':True,'branch_id':1}],
+      'accounts':[{'id':1,'name':'Наличные','opening_balance':0,'opening_date':'2026-01-01','active':True,'branch_id':1},{'id':2,'name':'Наличные','opening_balance':0,'opening_date':'2026-01-01','active':True,'branch_id':2}],
+      'owners':[{'id':1,'branch_id':2,'name':'Андрей','share':50,'dividend_article_id':22,'contribution_article_id':24,'active':True},{'id':2,'branch_id':2,'name':'Роман','share':50,'dividend_article_id':23,'contribution_article_id':None,'active':True}],
+      'ops':[
+        {'id':1,'branch_id':2,'op_date':'2026-11-04','account_id':2,'article_id':1,'object_id':3,'period':'2026-11-01','amount':58600},
+        {'id':2,'branch_id':2,'op_date':'2026-11-04','account_id':2,'article_id':4,'object_id':3,'period':'2026-11-01','amount':30000},
+        {'id':3,'branch_id':2,'op_date':'2026-11-04','account_id':2,'article_id':22,'object_id':2,'period':None,'amount':14300},
+        {'id':4,'branch_id':1,'op_date':'2026-11-02','account_id':1,'article_id':1,'object_id':4,'period':'2026-11-01','amount':10000}],
+    }
+    pb, eb = new_page(b, "window.__SEED__=%s;" % json.dumps(seedB))
+    check('филиалы: переключатель есть', pb.locator('#branch-sel').count()==1)
+    check('филиалы: в своде видны операции обоих филиалов', pb.locator('main tbody tr').count()==4, pb.locator('main tbody tr').count())
+    check('филиалы: в своде у объекта указан филиал', 'Заказ 1 · Филиал Б' in pb.inner_text('main'), pb.inner_text('main')[:300])
+    pb.select_option('#branch-sel', label='Филиал Б'); pb.wait_for_timeout(100)
+    check('филиалы: выбран филиал, видны только его операции', pb.locator('main tbody tr').count()==3 and 'Борк' not in pb.inner_text('main'))
+    pb.click('#add-op')
+    check('форма: филиал по умолчанию выбранный', pb.locator('#o-br option:checked').inner_text()=='Филиал Б')
+    check('форма: объекты только выбранного филиала', 'Борк' not in pb.inner_text('#o-obj') and 'Заказ 1' in pb.inner_text('#o-obj'))
+    pb.select_option('#o-br', label='Основной')
+    check('форма: смена филиала меняет объекты', 'Борк' in pb.inner_text('#o-obj') and 'Заказ 1' not in pb.inner_text('#o-obj'))
+    pb.click('[data-cancel]')
+    pb.click('[data-edit="1"]'); check('форма правки: филиал нельзя менять', pb.is_disabled('#o-br')); pb.click('[data-cancel]')
+    # собственники
+    pb.click('[data-tab=own]'); t = pb.inner_text('main')
+    check('собственники: прибыль филиала 28 600', '28 600' in t, t)
+    check('собственники: Андрей начислено 14 300 выплачено 14 300', 'Андрей' in t and t.count('14 300')>=3, t)
+    check('собственники: у Романа остаток 14 300', 'Роман' in t)
+    row_r = pb.inner_text('tr:has-text("Роман")')
+    check('собственники: Роман остаток к выплате 14 300', row_r.count('14 300')==2, row_r)
+    row_a = pb.inner_text('tr:has-text("Андрей")')
+    check('собственники: Андрей остаток 0', row_a.count('14 300')==2 and '-' in row_a, row_a)
+    # свод
+    pb.select_option('#branch-sel', label='Все филиалы'); pb.click('[data-tab=cons]')
+    pb.fill('#k-from','2026-01'); pb.dispatch_event('#k-from','change'); pb.fill('#k-to','2026-12'); pb.dispatch_event('#k-to','change')
+    t = pb.inner_text('main')
+    check('свод: оба филиала и итого', 'Основной' in t and 'Филиал Б' in t and 'Итого по JustClean' in t)
+    check('свод: выручка итого 68 600', '68 600' in pb.inner_text('tr.total'), pb.inner_text('tr.total'))
+    check('свод: прибыль итого 38 600', '38 600' in pb.inner_text('tr.total'))
+    check('свод: остаток денег итого 24 300', '24 300' in pb.inner_text('tr.total'))
+    check('свод: выплачено дивидендов 14 300', '14 300' in t)
+    # справочники
+    pb.click('[data-tab=ref]'); pb.click('[data-reftab=branches]')
+    check('справочник филиалов', 'Филиал Б' in pb.inner_text('main'))
+    pb.click('[data-reftab=owners]'); check('справочник собственников', 'Андрей' in pb.inner_text('main') and '50' in pb.inner_text('main'))
+    pb.click('[data-reftab=objects]'); pb.click('#add-ref'); pb.select_option('#x-br', label='Филиал Б'); pb.fill('#x-name','Заказ 1'); pb.click('[data-save]')
+    check('дубль названия внутри филиала блокируется', 'уже есть' in pb.inner_text('#x-err'))
+    pb.fill('#x-name','Борк'); pb.click('[data-save]'); pb.wait_for_timeout(300)
+    check('то же название в другом филиале разрешено', toast(pb)=='Данные внесены', toast(pb))
+    pb.click('[data-reftab=owners]'); pb.click('#add-ref'); pb.select_option('#x-br', label='Филиал Б'); pb.fill('#x-name','Тест'); pb.fill('#x-share','150'); pb.click('[data-save]')
+    check('доля больше 100 блокируется', 'не больше 100' in pb.inner_text('#x-err')); pb.click('[data-cancel]')
+    check('нет ошибок JS (филиалы)', not eb, eb)
     b.close()
 srv.terminate()
 print('\nFAILED:', fails if fails else 'нет')
