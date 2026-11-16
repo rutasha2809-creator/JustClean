@@ -269,6 +269,8 @@ function bindProf() { ['from', 'to'].forEach(k => ($('#p-' + k).onchange = () =>
 
 /* ---------- Собственники ---------- */
 const sumOps = (ops, artId, from = null, to = null) => r2(ops.filter(o => o.op_date && o.article_id === artId && (!from || ym(o.op_date) >= from) && (!to || ym(o.op_date) <= to)).reduce((t, o) => t + Number(o.amount), 0));
+// Возвраты: «Возврат дивидендов <имя>» уменьшает выплаченные дивиденды, «Возврат вложений <имя>» уменьшает вложенное
+const retSum = (ops, name, from = null, to = null) => { const a = S.articles.find(x => x.name === name); return a ? sumOps(ops, a.id, from, to) : 0; };
 const branchProfit = (b, from = '2000-01', to = '2999-12') => profitability({ ops: S.ops.filter(o => o.branch_id === b.id), arts: S.articles, objects: S.objects.filter(o => o.branch_id === b.id), from, to }).total;
 function viewOwn() {
   const brs = activeBranches().filter(b => !S.branch || String(b.id) === S.branch);
@@ -276,7 +278,7 @@ function viewOwn() {
     const ops = S.ops.filter(o => o.branch_id === b.id), prof = branchProfit(b).profit, owners = S.owners.filter(w => w.branch_id === b.id && w.active);
     let tAcc = 0, tPaid = 0, tIn = 0;
     const rows = owners.map(w => {
-      const acc = r2(prof * Number(w.share) / 100), paid = w.dividend_article_id ? sumOps(ops, w.dividend_article_id) : 0, inn = w.contribution_article_id ? sumOps(ops, w.contribution_article_id) : 0;
+      const acc = r2(prof * Number(w.share) / 100), paid = r2((w.dividend_article_id ? sumOps(ops, w.dividend_article_id) : 0) - retSum(ops, 'Возврат дивидендов ' + w.name)), inn = r2((w.contribution_article_id ? sumOps(ops, w.contribution_article_id) : 0) - retSum(ops, 'Возврат вложений ' + w.name));
       tAcc += acc; tPaid += paid; tIn += inn;
       return `<tr><td>${esc(w.name)}</td><td class="num">${fmt(Number(w.share))}%</td><td class="num">${fmt(acc)}</td><td class="num">${fmt(paid)}</td><td class="num ${acc - paid < 0 ? 'neg' : ''}">${fmt(r2(acc - paid))}</td><td class="num">${fmt(inn)}</td></tr>`;
     });
@@ -294,7 +296,8 @@ function consData() {
   return activeBranches().map(b => {
     const ops = S.ops.filter(o => o.branch_id === b.id), t = branchProfit(b, c.from, to);
     const divIds = new Set(S.owners.filter(w => w.branch_id === b.id && w.dividend_article_id).map(w => w.dividend_article_id));
-    const div = r2([...divIds].reduce((s, id) => s + sumOps(ops, id, c.from, to), 0));
+    const owNames = [...new Set(S.owners.filter(w => w.branch_id === b.id && w.dividend_article_id).map(w => w.name))];
+    const div = r2([...divIds].reduce((s, id) => s + sumOps(ops, id, c.from, to), 0) - owNames.reduce((s, n) => s + retSum(ops, 'Возврат дивидендов ' + n, c.from, to), 0));
     const cash = balanceAt(end, S.accounts.filter(a => a.branch_id === b.id), ops, S.articles);
     return { name: b.name, revenue: t.revenue, direct: t.direct, other: t.other, profit: t.profit, rentab: t.revenue ? r2(t.profit / t.revenue * 100) : null, div, cash };
   });
