@@ -1,4 +1,5 @@
 import { createApi } from './api.js';
+import { rowsFromScreen, downloadXlsx } from './xls.js';
 import { ddsReport, opuReport, profitability, expandPlanned, forecast, balanceAt, checks, internalImbalance, monthLabel, ym, r2 } from './calc.js';
 
 const api = window.__API__ || createApi();
@@ -107,13 +108,55 @@ function render() {
     <nav>${TABS.map(([k, t]) => `<button data-tab="${k}" class="${S.tab === k ? 'on' : ''}">${t}</button>`).join('')}</nav>
     <select id="branch-sel" class="branchsel" title="Филиал"><option value="">Все филиалы</option>${opt(activeBranches(), S.branch)}</select>
     <span class="who">${esc(S.user.email)} <span class="badge ${isEditor() ? '' : 'off'}">${isEditor() ? 'редактор' : 'просмотр'}</span><button class="link" id="out">Выйти</button></span></div></header>
-    <main>${view()}</main>`;
+    <main>${XLS_TABS[S.tab] ? '<div class="xlsbar"><button class="btn" id="xls">Выгрузить в Excel</button></div>' : ''}${view()}</main>`;
   document.querySelectorAll('nav [data-tab]').forEach(b => (b.onclick = () => { S.tab = b.dataset.tab; render(); }));
   $('#out').onclick = async () => { await api.signOut(); S.user = null; renderLogin(); };
   $('#branch-sel').onchange = () => { S.branch = $('#branch-sel').value; saveBranch(); Object.assign(S.f, { object: '', account: '', limit: 200 }); S.rep.object = ''; render(); };
+  $('#xls') && ($('#xls').onclick = exportXls);
   ({ ops: bindOps, dds: bindRep, opu: bindRep, prof: bindProf, own: () => { }, cons: bindCons, cal: bindCal, ref: bindRef }[S.tab])();
 }
 const opt = (list, sel, label = x => x.name, empty = null) => (empty != null ? `<option value="">${esc(empty)}</option>` : '') + list.map(x => `<option value="${x.id}" ${String(x.id) === String(sel) ? 'selected' : ''}>${esc(label(x))}</option>`).join('');
+
+/* ---------- Выгрузка в Excel ---------- */
+const XLS_TABS = { ops: 'Операции', dds: 'ДДС', opu: 'ОПУ', prof: 'Рентабельность', own: 'Собственники', cons: 'Свод по филиалам', cal: 'Платёжный календарь' };
+const perLabel = (f, t) => `${monthLabel(f)} - ${monthLabel(t < f ? f : t)}`;
+function xlsMeta() {
+  const name = XLS_TABS[S.tab], br = S.branch ? brName(+S.branch) : 'Все филиалы', m = [name, 'Филиал: ' + br];
+  const r = S.rep;
+  if (S.tab === 'dds' || S.tab === 'opu') { m.push('Период: ' + perLabel(r.from, r.to)); m.push('Разрез: ' + (r.mode === 'objects' ? 'по объектам' : 'по месяцам') + (r.mode !== 'objects' && r.object ? ', объект: ' + objName(+r.object) : '')); }
+  if (S.tab === 'prof') m.push('Период: ' + perLabel(S.prof.from, S.prof.to));
+  if (S.tab === 'cons') m.push('Период: ' + perLabel(S.cons.from, S.cons.to));
+  if (S.tab === 'cal') m.push('Горизонт: ' + S.cal.days + ' дней от ' + fmtDate(todayStr()));
+  if (S.tab === 'ops') {
+    const f = S.f, parts = [];
+    if (f.month) parts.push('месяц ' + monthLabel(f.month)); if (f.object) parts.push('объект ' + objName(+f.object));
+    if (f.account) parts.push('счёт ' + accName(+f.account)); if (f.article) parts.push('статья ' + artName(+f.article)); if (f.q.trim()) parts.push('поиск «' + f.q.trim() + '»');
+    m.push('Отбор: ' + (parts.join(', ') || 'все операции'));
+  }
+  m.push('Выгружено ' + fmtDate(todayStr()));
+  return m;
+}
+function opsRows() {
+  const withBr = multi(), head = ['Дата оплаты', 'Период', ...(withBr ? ['Филиал'] : []), 'Счёт', 'Статья', 'Объект', 'Контрагент', 'Комментарий', 'Сумма'];
+  const toDate = d => (d ? new Date(d + 'T00:00:00') : '');
+  return [head, ...filteredOps().map(o => {
+    const a = byId(S.articles, o.article_id), b = byId(S.objects, o.object_id);
+    return [o.op_date ? toDate(o.op_date) : 'начисление', o.period ? monthLabel(ym(o.period)) : '', ...(withBr ? [brName(o.branch_id)] : []), (byId(S.accounts, o.account_id)?.name || ''), a?.name || '?', b ? b.name : '?', o.counterparty || '', o.comment || '', { v: (a?.kind === 'income' ? 1 : -1) * Number(o.amount), z: '#,##0.00;-#,##0.00;"-"' }];
+  })];
+}
+let xlsBusy = false;
+async function exportXls() {
+  if (xlsBusy) return; xlsBusy = true;
+  const btn = $('#xls'); btn.disabled = true; btn.textContent = 'Готовлю файл...';
+  try {
+    const meta = xlsMeta(), name = XLS_TABS[S.tab];
+    const rows = S.tab === 'ops' ? opsRows() : rowsFromScreen($('main'));
+    const br = S.branch ? '_' + brName(+S.branch) : '';
+    await downloadXlsx(`${name}${br}_${todayStr()}.xlsx`, name, meta, rows);
+    toast('Файл Excel скачан');
+  } catch (e) { toast('Не выгружено: ' + e.message, true); }
+  finally { xlsBusy = false; const b = $('#xls'); if (b) { b.disabled = false; b.textContent = 'Выгрузить в Excel'; } }
+}
 
 /* ---------- Операции ---------- */
 function filteredOps() {
