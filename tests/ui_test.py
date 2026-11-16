@@ -94,6 +94,7 @@ with sync_playwright() as pw:
     check('ОПУ без дивидендов', 'Дивиденды' not in t)
     p.click('[data-tab=prof]'); t = p.inner_text('main')
     check('Рентабельность: Лесная 60%', 'Лесная' in t and '60%' in t, t); check('Рентабельность: Борк 100%', '100%' in t)
+    hd = p.inner_text('main thead'); check('Рентабельность: колонки адм., коммерческие, агентские, налоги', all(x in hd for x in ['Административные','Коммерческие','Агентские','Налоги и прочее']) and 'Прочие расходы' not in hd, hd)
 
     # 4. календарь
     p.click('[data-tab=cal]'); p.click('#add-plan'); p.fill('#p-date', TD[:8]+'28' if today.day<=28 else TD); p.select_option('#p-art',label='Аренда офиса и склада'); p.select_option('#p-obj',label='Все объекты'); p.fill('#p-amt','100'); p.select_option('#p-rec','monthly'); p.click('[data-save]'); p.wait_for_timeout(300)
