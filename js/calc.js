@@ -1,7 +1,9 @@
 // Расчётное ядро: чистые функции без обращения к странице и базе (покрыты тестами)
 
 export const MONTHS_RU = ['январь','февраль','март','апрель','май','июнь','июль','август','сентябрь','октябрь','ноябрь','декабрь'];
-export const OPU_ORDER = ['Выручка', 'Прямые расходы', '#Маржинальная прибыль', 'Коммерческие и агентские', 'Административные', '#Операционная прибыль', 'Прочие доходы и расходы', 'Налоги', '#Чистая прибыль'];
+export const OPU_ORDER = ['Выручка', 'Прямые расходы', '#Маржинальная прибыль', 'Административные', 'Коммерческие', 'Агентские', '#Операционная прибыль', 'Прочие доходы и расходы', 'Налоги', '#Чистая прибыль'];
+// Старое название группы до разделения: считаем коммерческими (кроме агентских статей)
+export const opuGroup = a => (a.opu_group === 'Коммерческие и агентские' ? (/агентск/i.test(a.name) ? 'Агентские' : 'Коммерческие') : a.opu_group);
 export const DDS_SECTIONS = [['operating','Операционная деятельность'], ['investing','Инвестиционная деятельность'], ['financing','Финансовая деятельность']];
 
 export const r2 = x => Math.round((x + Number.EPSILON) * 100) / 100;
@@ -113,7 +115,7 @@ export function opuReport({ ops, arts, objects, from, to, objectId = null, mode 
       const p = pct(vals); rows.push({ type: 'percent', label: name + ', % от выручки', vals: p, total: revenue ? r2(sum(vals, cols) / (sum(revenue, cols) || 1) * 100) : 0 });
       continue;
     }
-    const list = arts.filter(a => a.opu_group === g).sort((a, b) => a.sort - b.sort);
+    const list = arts.filter(a => opuGroup(a) === g).sort((a, b) => a.sort - b.sort);
     const items = artRows(list, m, cols, 1);
     const vals = rowVals(cols, c => list.reduce((s, a) => s + signed({ amount: m[a.id]?.[c] || 0 }, a), 0));
     const total = sum(vals, cols);
@@ -127,29 +129,37 @@ export function opuReport({ ops, arts, objects, from, to, objectId = null, mode 
 }
 
 // Рентабельность по объектам за период (по начислению). Общие расходы ("Все объекты") отдельной строкой
+// other = adm + com + agent + tax (налоги и прочие доходы/расходы); все расходы положительные
+const PZ = () => ({ revenue: 0, direct: 0, adm: 0, com: 0, agent: 0, tax: 0 });
+const PK = ['revenue', 'direct', 'adm', 'com', 'agent', 'tax'];
 export function profitability({ ops, arts, objects, from, to }) {
   const am = artMap(arts);
   const by = {};
   for (const o of ops) {
     const a = am.get(o.article_id);
     if (!a || !o.period || !a.opu_group || ym(o.period) < from || ym(o.period) > to) continue;
-    const r = (by[o.object_id] ??= { revenue: 0, direct: 0, other: 0 });
-    const v = Number(o.amount);
-    if (a.opu_group === 'Выручка') r.revenue += v;
-    else if (a.opu_group === 'Прямые расходы') r.direct += v;
-    else r.other += signed(o, a);                // коммерческие, административные, налоги, прочие: расход со знаком минус
+    const r = (by[o.object_id] ??= PZ());
+    const v = Number(o.amount), g = opuGroup(a);
+    if (g === 'Выручка') r.revenue += v;
+    else if (g === 'Прямые расходы') r.direct += v;
+    else if (g === 'Административные') r.adm -= signed(o, a);
+    else if (g === 'Коммерческие') r.com -= signed(o, a);
+    else if (g === 'Агентские') r.agent -= signed(o, a);
+    else r.tax -= signed(o, a);                  // налоги, прочие доходы и расходы (доход уменьшает)
   }
-  const mk = (id, name, common, r = { revenue: 0, direct: 0, other: 0 }) => {
-    const margin = r2(r.revenue - r.direct), profit = r2(margin + r.other);
-    return { id, name, common, revenue: r2(r.revenue), direct: r2(r.direct), margin, other: r2(-r.other), profit, rentab: r.revenue ? r2(profit / r.revenue * 100) : null };
+  const mk = (id, name, common, r = PZ()) => {
+    const x = Object.fromEntries(PK.map(k => [k, r2(r[k])]));
+    const other = r2(x.adm + x.com + x.agent + x.tax), margin = r2(x.revenue - x.direct), profit = r2(margin - other);
+    return { id, name, common, ...x, margin, other, profit, rentab: x.revenue ? r2(profit / x.revenue * 100) : null };
   };
+  const add = (a, b) => Object.fromEntries(PK.map(k => [k, a[k] + b[k]]));
   const list = objects.filter(o => !o.is_common && by[o.id]).map(o => mk(o.id, o.name, false, by[o.id]));
   const commons = objects.filter(o => o.is_common && by[o.id]);
-  const merged = commons.reduce((a, o) => ({ revenue: a.revenue + by[o.id].revenue, direct: a.direct + by[o.id].direct, other: a.other + by[o.id].other }), { revenue: 0, direct: 0, other: 0 });
+  const merged = commons.reduce((a, o) => add(a, by[o.id]), PZ());
   const common = commons.length ? mk(commons[0].id, commons.length > 1 ? 'Общие расходы (все филиалы)' : commons[0].name + ' (общие расходы)', true, merged) : null;
   const all = [...list, ...(common ? [common] : [])];
-  const t = all.reduce((s, r) => ({ revenue: s.revenue + r.revenue, direct: s.direct + r.direct, other: s.other + r.other }), { revenue: 0, direct: 0, other: 0 });
-  const total = { id: 'total', name: 'Итого по компании', common: false, revenue: r2(t.revenue), direct: r2(t.direct), margin: r2(t.revenue - t.direct), other: r2(t.other), profit: r2(t.revenue - t.direct - t.other), rentab: t.revenue ? r2((t.revenue - t.direct - t.other) / t.revenue * 100) : null };
+  const t = all.reduce((s, r) => add(s, r), PZ());
+  const total = mk('total', 'Итого по компании', false, t);
   return { rows: list, common, total };
 }
 

@@ -94,6 +94,7 @@ with sync_playwright() as pw:
     check('ОПУ без дивидендов', 'Дивиденды' not in t)
     p.click('[data-tab=prof]'); t = p.inner_text('main')
     check('Рентабельность: Лесная 60%', 'Лесная' in t and '60%' in t, t); check('Рентабельность: Борк 100%', '100%' in t)
+    hd = p.inner_text('main thead'); check('Рентабельность: колонки адм., коммерческие, агентские, налоги', all(x in hd for x in ['Административные','Коммерческие','Агентские','Налоги и прочее']) and 'Прочие расходы' not in hd, hd)
 
     # 4. календарь
     p.click('[data-tab=cal]'); p.click('#add-plan'); p.fill('#p-date', TD[:8]+'28' if today.day<=28 else TD); p.select_option('#p-art',label='Аренда офиса и склада'); p.select_option('#p-obj',label='Все объекты'); p.fill('#p-amt','100'); p.select_option('#p-rec','monthly'); p.click('[data-save]'); p.wait_for_timeout(300)
@@ -195,6 +196,72 @@ with sync_playwright() as pw:
     pc.fill('#k-from','2026-01'); pc.dispatch_event('#k-from','change'); pc.fill('#k-to','2026-12'); pc.dispatch_event('#k-to','change')
     check('свод: дивиденды за вычетом возврата 10 000', '10 000' in pc.inner_text('main'), pc.inner_text('main')[-400:])
     check('нет ошибок JS (возвраты)', not ec, ec)
+
+    # 7. выгрузка в Excel
+    import openpyxl, tempfile
+    XLIB = os.environ.get('XLSX_LIB', '/tmp/claude-0/xlsxlib/node_modules/xlsx/dist/xlsx.full.min.js')
+    LIBJS = open(XLIB, encoding='utf-8').read()
+    def with_lib(pg): pg.route('**/npm/xlsx@*/**', lambda r: r.fulfill(status=200, body=LIBJS, content_type='text/javascript'))
+    def xls(pg):
+        with pg.expect_download() as d: pg.click('#xls')
+        f = tempfile.mktemp(suffix='.xlsx'); d.value.save_as(f); pg.wait_for_timeout(100)
+        ws = openpyxl.load_workbook(f).active
+        return d.value.suggested_filename, ws, [list(r) for r in ws.iter_rows(values_only=True)]
+    def find(rows, label):
+        for r in rows:
+            if r and r[0] == label: return r
+    with_lib(pb)
+    pb.select_option('#branch-sel', label='Все филиалы'); pb.click('[data-tab=ops]')
+    check('кнопка выгрузки есть на журнале', pb.locator('#xls').count()==1)
+    fn, ws, rows = xls(pb)
+    check('выгрузка: тост', toast(pb)=='Файл Excel скачан', toast(pb))
+    check('выгрузка операций: имя файла', fn.startswith('Операции_') and fn.endswith('.xlsx'), fn)
+    hdr = next(r for r in rows if r and r[0]=='Дата оплаты')
+    check('выгрузка операций: колонка филиала при всех филиалах', 'Филиал' in hdr, hdr)
+    data = rows[rows.index(hdr)+1:]
+    check('выгрузка операций: 4 строки', len(data)==4, data)
+    check('выгрузка операций: сумма числом со знаком', sorted(r[-1] for r in data)==[-30000,-14300,10000,58600], [r[-1] for r in data])
+    check('выгрузка операций: дата как дата', isinstance(data[0][0], datetime.datetime), data[0][0])
+    check('выгрузка операций: шапка с филиалом и отбором', rows[1][0]=='Филиал: Все филиалы' and rows[2][0].startswith('Отбор: все'), rows[:4])
+    pb.click('[data-tab=own]'); fn, ws, rows = xls(pb)
+    a = find(rows, 'Андрей'); check('выгрузка собственников: Андрей числами', a and a[1]==0.5 and a[2]==14300 and a[3]==14300 and a[4]==0, a)
+    check('выгрузка собственников: доля в процентах', '%' in ws.cell(row=rows.index(a)+1, column=2).number_format)
+    pf = [r[1] for r in rows if r and r[0]=='Прибыль филиала']
+    check('выгрузка собственников: прибыль каждого филиала', pf==[10000,28600], pf)
+    check('выгрузка собственников: названия филиалов', 'Основной' in [r[0] for r in rows if r] and 'Филиал Б' in [r[0] for r in rows if r])
+    pb.click('[data-tab=cons]'); fn, ws, rows = xls(pb)
+    tr = find(rows, 'Итого по JustClean'); check('выгрузка свода: итого', tr and tr[1]==68600 and tr[4]==38600 and tr[7]==24300, tr)
+    check('выгрузка свода: период в шапке', any(r and str(r[0]).startswith('Период: ') for r in rows[:5]))
+    pb.click('[data-tab=dds]'); pb.fill('#r-from','2026-01'); pb.dispatch_event('#r-from','change'); pb.fill('#r-to','2026-12'); pb.dispatch_event('#r-to','change')
+    fn, ws, rows = xls(pb)
+    rv = find(rows, '    Выручка от клиентов'); check('выгрузка ДДС: выручка 68 600 в итоге', rv and rv[-1]==68600, rv)
+    check('выгрузка ДДС: 12 месяцев + итого', rv and len([x for x in rv[1:] if x is not None])==13, rv)
+    check('выгрузка ДДС: остатки по счетам', any(r and r[0]=='Наличные' for r in rows), [r for r in rows if r and r[0] and 'Налич' in str(r[0])])
+    check('выгрузка ДДС: группы без отступа', find(rows, 'Поступления') is not None)
+    pb.click('[data-tab=opu]'); fn, ws, rows = xls(pb)
+    check('выгрузка ОПУ: чистая прибыль', (find(rows,'Чистая прибыль') or [None])[-1]==38600, find(rows,'Чистая прибыль'))
+    pb.click('[data-tab=prof]'); pb.fill('#p-from','2026-01'); pb.dispatch_event('#p-from','change'); fn, ws, rows = xls(pb)
+    z = find(rows, 'Заказ 1 · Филиал Б'); check('выгрузка рентабельности: проценты долей', z and abs(z[-1]-0.4881)<0.001, z)
+    pb.click('[data-tab=cal]'); fn, ws, rows = xls(pb); check('выгрузка календаря работает', fn.startswith('Платёжный календарь_'), fn)
+    pb.click('[data-tab=ref]'); check('на справочниках кнопки нет', pb.locator('#xls').count()==0)
+    pb.select_option('#branch-sel', label='Филиал Б'); pb.click('[data-tab=ops]'); fn, ws, rows = xls(pb)
+    check('выгрузка по филиалу: имя файла и без колонки филиала', 'Филиал Б' in fn and 'Филиал' not in next(r for r in rows if r and r[0]=='Дата оплаты'), fn)
+    check('нет ошибок JS (выгрузка)', not eb, eb)
+    # больше 200 операций: выгружаются все, а не только показанные
+    many = [{'id':i,'branch_id':1,'op_date':'2026-03-%02d'%(i%28+1),'account_id':1,'article_id':1,'object_id':4,'period':'2026-03-01','amount':i} for i in range(1,251)]
+    seedM = dict(seedB); seedM['ops'] = many
+    pm, em = new_page(b, "window.__SEED__=%s;" % json.dumps(seedM)); with_lib(pm)
+    fn, ws, rows = xls(pm); hdr = next(r for r in rows if r and r[0]=='Дата оплаты')
+    check('выгрузка: все 250 операций, а не 200 на экране', len(rows)-rows.index(hdr)-1==250, len(rows))
+    # нет интернета: понятная ошибка, кнопка возвращается
+    pn, en = new_page(b, "window.__SEED__=%s;" % json.dumps(seedB)); pn.route('**/npm/xlsx@*/**', lambda r: r.abort())
+    pn.click('#xls'); pn.wait_for_function("document.querySelector('#toast').classList.contains('err')")
+    check('без библиотеки: красный тост', 'Не выгружено' in toast(pn), toast(pn))
+    check('без библиотеки: кнопка снова активна', pn.is_enabled('#xls') and pn.inner_text('#xls')=='Выгрузить в Excel')
+    # просмотр тоже может выгружать
+    pv, ev = new_page(b, "window.__ROLE__='viewer';window.__SEED__=%s;" % json.dumps(seedB)); with_lib(pv)
+    fn, ws, rows = xls(pv); check('пользователь с просмотром может выгрузить', fn.endswith('.xlsx'))
+    check('нет ошибок JS (выгрузка, прочие)', not (em or ev), (em, ev))
     b.close()
 srv.terminate()
 print('\nFAILED:', fails if fails else 'нет')

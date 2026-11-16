@@ -133,3 +133,31 @@ test('рентабельность: общие расходы нескольки
   const r = profitability({ ops, arts, objects: objs, from: '2026-11', to: '2026-11' });
   assert.equal(r.common.other, 150); assert.equal(r.total.profit, 850);
 });
+
+test('рентабельность: административные, коммерческие, агентские и налоги отдельно', () => {
+  const A = [
+    { id: 1, name: 'Выручка', kind: 'income', dds_section: 'operating', opu_group: 'Выручка', sort: 1 },
+    { id: 2, name: 'ЗП клининг', kind: 'expense', dds_section: 'operating', opu_group: 'Прямые расходы', sort: 2 },
+    { id: 3, name: 'Аренда', kind: 'expense', dds_section: 'operating', opu_group: 'Административные', sort: 3 },
+    { id: 7, name: 'Агентские и процент менеджера', kind: 'expense', dds_section: 'operating', opu_group: 'Коммерческие и агентские', sort: 70 },
+    { id: 8, name: 'Реклама и привлечение', kind: 'expense', dds_section: 'operating', opu_group: 'Коммерческие и агентские', sort: 80 },
+    { id: 9, name: 'Агентские 2', kind: 'expense', dds_section: 'operating', opu_group: 'Агентские', sort: 81 },
+    { id: 10, name: 'Реклама 2', kind: 'expense', dds_section: 'operating', opu_group: 'Коммерческие', sort: 82 },
+    { id: 14, name: 'Налоги', kind: 'expense', dds_section: 'operating', opu_group: 'Налоги', sort: 140 },
+    { id: 39, name: 'Возврат налогов', kind: 'income', dds_section: 'operating', opu_group: 'Прочие доходы и расходы', sort: 150 },
+  ];
+  const objs = [{ id: 1, name: 'Все объекты', is_common: true }, { id: 3, name: 'Заказ', is_common: false }];
+  const P = '2026-11-01', op = (article_id, object_id, amount) => ({ article_id, object_id, period: P, amount });
+  const ops = [op(1, 3, 1000), op(2, 3, 300), op(3, 3, 50), op(7, 3, 40), op(8, 3, 30), op(9, 3, 4), op(10, 3, 3), op(14, 3, 60), op(39, 3, 10), op(3, 1, 100)];
+  const r = profitability({ ops, arts: A, objects: objs, from: '2026-11', to: '2026-11' });
+  const z = r.rows[0];
+  assert.deepEqual([z.revenue, z.direct, z.margin, z.adm, z.com, z.agent, z.tax], [1000, 300, 700, 50, 33, 44, 50]);
+  assert.equal(z.other, 177); assert.equal(z.profit, 523); assert.equal(z.rentab, 52.3);
+  assert.equal(r.common.adm, 100); assert.equal(r.total.profit, 423); assert.equal(r.total.agent, 44);
+  const o = opuReport({ ops, arts: A, objects: objs, from: '2026-11', to: '2026-11' });
+  const g = o.rows.filter(x => x.type === 'group').map(x => [x.label, x.total]);
+  assert.deepEqual(g.find(x => x[0] === 'Коммерческие'), ['Коммерческие', 33]);
+  assert.deepEqual(g.find(x => x[0] === 'Агентские'), ['Агентские', 44]);
+  assert.ok(!g.some(x => x[0] === 'Коммерческие и агентские'));
+  assert.equal(o.rows.find(x => x.label === 'Чистая прибыль').total, 423);
+});

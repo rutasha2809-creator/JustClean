@@ -1,5 +1,6 @@
 import { createApi } from './api.js';
-import { ddsReport, opuReport, profitability, expandPlanned, forecast, balanceAt, checks, internalImbalance, monthLabel, ym, r2 } from './calc.js';
+import { rowsFromScreen, downloadXlsx } from './xls.js';
+import { ddsReport, opuReport, profitability, expandPlanned, forecast, balanceAt, checks, internalImbalance, monthLabel, ym, r2, opuGroup } from './calc.js';
 
 const api = window.__API__ || createApi();
 const $ = (s, r = document) => r.querySelector(s);
@@ -107,13 +108,55 @@ function render() {
     <nav>${TABS.map(([k, t]) => `<button data-tab="${k}" class="${S.tab === k ? 'on' : ''}">${t}</button>`).join('')}</nav>
     <select id="branch-sel" class="branchsel" title="Филиал"><option value="">Все филиалы</option>${opt(activeBranches(), S.branch)}</select>
     <span class="who">${esc(S.user.email)} <span class="badge ${isEditor() ? '' : 'off'}">${isEditor() ? 'редактор' : 'просмотр'}</span><button class="link" id="out">Выйти</button></span></div></header>
-    <main>${view()}</main>`;
+    <main>${XLS_TABS[S.tab] ? '<div class="xlsbar"><button class="btn" id="xls">Выгрузить в Excel</button></div>' : ''}${view()}</main>`;
   document.querySelectorAll('nav [data-tab]').forEach(b => (b.onclick = () => { S.tab = b.dataset.tab; render(); }));
   $('#out').onclick = async () => { await api.signOut(); S.user = null; renderLogin(); };
   $('#branch-sel').onchange = () => { S.branch = $('#branch-sel').value; saveBranch(); Object.assign(S.f, { object: '', account: '', limit: 200 }); S.rep.object = ''; render(); };
+  $('#xls') && ($('#xls').onclick = exportXls);
   ({ ops: bindOps, dds: bindRep, opu: bindRep, prof: bindProf, own: () => { }, cons: bindCons, cal: bindCal, ref: bindRef }[S.tab])();
 }
 const opt = (list, sel, label = x => x.name, empty = null) => (empty != null ? `<option value="">${esc(empty)}</option>` : '') + list.map(x => `<option value="${x.id}" ${String(x.id) === String(sel) ? 'selected' : ''}>${esc(label(x))}</option>`).join('');
+
+/* ---------- Выгрузка в Excel ---------- */
+const XLS_TABS = { ops: 'Операции', dds: 'ДДС', opu: 'ОПУ', prof: 'Рентабельность', own: 'Собственники', cons: 'Свод по филиалам', cal: 'Платёжный календарь' };
+const perLabel = (f, t) => `${monthLabel(f)} - ${monthLabel(t < f ? f : t)}`;
+function xlsMeta() {
+  const name = XLS_TABS[S.tab], br = S.branch ? brName(+S.branch) : 'Все филиалы', m = [name, 'Филиал: ' + br];
+  const r = S.rep;
+  if (S.tab === 'dds' || S.tab === 'opu') { m.push('Период: ' + perLabel(r.from, r.to)); m.push('Разрез: ' + (r.mode === 'objects' ? 'по объектам' : 'по месяцам') + (r.mode !== 'objects' && r.object ? ', объект: ' + objName(+r.object) : '')); }
+  if (S.tab === 'prof') m.push('Период: ' + perLabel(S.prof.from, S.prof.to));
+  if (S.tab === 'cons') m.push('Период: ' + perLabel(S.cons.from, S.cons.to));
+  if (S.tab === 'cal') m.push('Горизонт: ' + S.cal.days + ' дней от ' + fmtDate(todayStr()));
+  if (S.tab === 'ops') {
+    const f = S.f, parts = [];
+    if (f.month) parts.push('месяц ' + monthLabel(f.month)); if (f.object) parts.push('объект ' + objName(+f.object));
+    if (f.account) parts.push('счёт ' + accName(+f.account)); if (f.article) parts.push('статья ' + artName(+f.article)); if (f.q.trim()) parts.push('поиск «' + f.q.trim() + '»');
+    m.push('Отбор: ' + (parts.join(', ') || 'все операции'));
+  }
+  m.push('Выгружено ' + fmtDate(todayStr()));
+  return m;
+}
+function opsRows() {
+  const withBr = multi(), head = ['Дата оплаты', 'Период', ...(withBr ? ['Филиал'] : []), 'Счёт', 'Статья', 'Объект', 'Контрагент', 'Комментарий', 'Сумма'];
+  const toDate = d => (d ? new Date(d + 'T00:00:00') : '');
+  return [head, ...filteredOps().map(o => {
+    const a = byId(S.articles, o.article_id), b = byId(S.objects, o.object_id);
+    return [o.op_date ? toDate(o.op_date) : 'начисление', o.period ? monthLabel(ym(o.period)) : '', ...(withBr ? [brName(o.branch_id)] : []), (byId(S.accounts, o.account_id)?.name || ''), a?.name || '?', b ? b.name : '?', o.counterparty || '', o.comment || '', { v: (a?.kind === 'income' ? 1 : -1) * Number(o.amount), z: '#,##0.00;-#,##0.00;"-"' }];
+  })];
+}
+let xlsBusy = false;
+async function exportXls() {
+  if (xlsBusy) return; xlsBusy = true;
+  const btn = $('#xls'); btn.disabled = true; btn.textContent = 'Готовлю файл...';
+  try {
+    const meta = xlsMeta(), name = XLS_TABS[S.tab];
+    const rows = S.tab === 'ops' ? opsRows() : rowsFromScreen($('main'));
+    const br = S.branch ? '_' + brName(+S.branch) : '';
+    await downloadXlsx(`${name}${br}_${todayStr()}.xlsx`, name, meta, rows);
+    toast('Файл Excel скачан');
+  } catch (e) { toast('Не выгружено: ' + e.message, true); }
+  finally { xlsBusy = false; const b = $('#xls'); if (b) { b.disabled = false; b.textContent = 'Выгрузить в Excel'; } }
+}
 
 /* ---------- Операции ---------- */
 function filteredOps() {
@@ -260,9 +303,9 @@ function bindRep() {
 function viewProf() {
   const p = S.prof, to = p.to < p.from ? p.from : p.to;
   const d = profitability({ ops: sOps(), arts: S.articles, objects: labeled(sObjects()), from: p.from, to });
-  const row = (r, cls = '') => `<tr class="${cls}"><td>${esc(r.name)}</td><td class="num">${fmt(r.revenue)}</td><td class="num">${fmt(r.direct)}</td><td class="num ${r.margin < 0 ? 'neg' : ''}">${fmt(r.margin)}</td><td class="num">${fmt(r.other)}</td><td class="num ${r.profit < 0 ? 'neg' : 'pos'}">${fmt(r.profit)}</td><td class="num ${r.rentab < 0 ? 'neg' : ''}">${r.rentab == null ? '' : fmt(r.rentab) + '%'}</td></tr>`;
+  const row = (r, cls = '') => `<tr class="${cls}"><td>${esc(r.name)}</td><td class="num">${fmt(r.revenue)}</td><td class="num">${fmt(r.direct)}</td><td class="num ${r.margin < 0 ? 'neg' : ''}">${fmt(r.margin)}</td><td class="num">${fmt(r.adm)}</td><td class="num">${fmt(r.com)}</td><td class="num">${fmt(r.agent)}</td><td class="num ${r.tax < 0 ? 'neg' : ''}">${fmt(r.tax)}</td><td class="num ${r.profit < 0 ? 'neg' : 'pos'}">${fmt(r.profit)}</td><td class="num ${r.rentab < 0 ? 'neg' : ''}">${r.rentab == null ? '' : fmt(r.rentab) + '%'}</td></tr>`;
   return `<div class="card"><h3 style="margin-top:0">Рентабельность по объектам</h3><div class="toolbar"><label>С<input type="month" id="p-from" value="${p.from}"></label><label>По<input type="month" id="p-to" value="${p.to}"></label></div>
-  <div class="tablewrap"><table><thead><tr><th>Объект</th><th class="num">Выручка</th><th class="num">Прямые расходы</th><th class="num">Маржа</th><th class="num">Прочие расходы</th><th class="num">Прибыль</th><th class="num">Рентабельность</th></tr></thead><tbody>
+  <div class="tablewrap"><table><thead><tr><th>Объект</th><th class="num">Выручка</th><th class="num">Прямые расходы</th><th class="num">Маржа</th><th class="num">Административные</th><th class="num">Коммерческие</th><th class="num">Агентские</th><th class="num">Налоги и прочее</th><th class="num">Прибыль</th><th class="num">Рентабельность</th></tr></thead><tbody>
   ${d.rows.sort((a, b) => b.profit - a.profit).map(r => row(r)).join('')}${d.common ? row(d.common) : ''}${row(d.total, 'total')}</tbody></table></div></div>`;
 }
 function bindProf() { ['from', 'to'].forEach(k => ($('#p-' + k).onchange = () => { S.prof[k] = $('#p-' + k).value; render(); })); }
@@ -372,13 +415,13 @@ function openPlanForm(p) {
 
 /* ---------- Справочники ---------- */
 const SEC = { operating: 'Операционная', investing: 'Инвестиционная', financing: 'Финансовая', internal: 'Перемещения (не в потоке)' };
-const OPU_GROUPS = ['Выручка', 'Прямые расходы', 'Коммерческие и агентские', 'Административные', 'Прочие доходы и расходы', 'Налоги'];
+const OPU_GROUPS = ['Выручка', 'Прямые расходы', 'Административные', 'Коммерческие', 'Агентские', 'Прочие доходы и расходы', 'Налоги'];
 const REFS = {
   objects: { title: 'Объекты', table: 'objects', cols: [['Филиал', o => esc(brName(o.branch_id))], ['Название', o => esc(o.name)], ['Юрлицо', o => esc(o.legal_entity)], ['Тип', o => (o.is_common ? 'Общие расходы' : '')]] },
   accounts: { title: 'Счета', table: 'accounts', cols: [['Филиал', o => esc(brName(o.branch_id))], ['Название', o => esc(o.name)], ['Остаток на начало', o => fmt(Number(o.opening_balance)) === '-' ? '0' : fmt(Number(o.opening_balance))], ['Дата остатка', o => fmtDate(o.opening_date)]] },
   branches: { title: 'Филиалы', table: 'branches', cols: [['Название', o => esc(o.name)]] },
   owners: { title: 'Собственники', table: 'owners', cols: [['Филиал', o => esc(brName(o.branch_id))], ['Собственник', o => esc(o.name)], ['Доля, %', o => fmt(Number(o.share))], ['Статья дивидендов', o => esc(artName(o.dividend_article_id))], ['Статья вложений', o => esc(artName(o.contribution_article_id))]] },
-  articles: { title: 'Статьи', table: 'articles', cols: [['Название', o => esc(o.name)], ['Вид', o => (o.kind === 'income' ? 'Доход' : 'Расход')], ['ДДС', o => SEC[o.dds_section]], ['ОПУ', o => esc(o.opu_group || 'не входит')]] },
+  articles: { title: 'Статьи', table: 'articles', cols: [['Название', o => esc(o.name)], ['Вид', o => (o.kind === 'income' ? 'Доход' : 'Расход')], ['ДДС', o => SEC[o.dds_section]], ['ОПУ', o => esc(o.opu_group ? opuGroup(o) : 'не входит')]] },
 };
 const refList = k => ({ objects: sObjects(), accounts: sAccounts(), owners: S.owners.filter(inBr) }[k] || S[REFS[k].table]);
 function viewRef() {
@@ -418,7 +461,7 @@ function openRefForm(o) {
     articles: `<label class="full">Название<input id="x-name" value="${esc(o?.name)}"></label>
       <label>Вид<select id="x-kind"><option value="income" ${o?.kind === 'income' ? 'selected' : ''}>Доход</option><option value="expense" ${!o || o.kind === 'expense' ? 'selected' : ''}>Расход</option></select></label>
       <label>Раздел ДДС<select id="x-sec">${Object.entries(SEC).map(([v, t]) => `<option value="${v}" ${o?.dds_section === v ? 'selected' : ''}>${t}</option>`).join('')}</select></label>
-      <label class="full">Группа ОПУ<select id="x-opu"><option value="">Не входит в ОПУ</option>${OPU_GROUPS.map(g => `<option ${o?.opu_group === g ? 'selected' : ''}>${g}</option>`).join('')}</select></label>`,
+      <label class="full">Группа ОПУ<select id="x-opu"><option value="">Не входит в ОПУ</option>${OPU_GROUPS.map(g => `<option ${o && opuGroup(o) === g ? 'selected' : ''}>${g}</option>`).join('')}</select></label>`,
   }[k];
   const m = openModal(`<h3>${isNew ? 'Добавить' : 'Изменить'}: ${R.title.toLowerCase()}</h3><div class="form">${fields}<div class="err" id="x-err"></div></div><div class="actions"><button class="btn" data-cancel>Отмена</button><button class="btn primary" data-save>Сохранить</button></div>`);
   m.querySelector('[data-cancel]').onclick = closeModal;

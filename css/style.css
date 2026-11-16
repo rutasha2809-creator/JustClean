@@ -68,3 +68,5 @@ tr.low td.bal{color:var(--red);font-weight:700}
 @media(max-width:640px){.form{grid-template-columns:1fr}}
 
 .branchsel{margin-left:auto;margin-right:12px;max-width:200px;padding:4px 8px;font:inherit}
+
+.xlsbar{display:flex;justify-content:flex-end;margin-bottom:8px}
