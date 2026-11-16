@@ -178,6 +178,23 @@ with sync_playwright() as pw:
     pb.click('[data-reftab=owners]'); pb.click('#add-ref'); pb.select_option('#x-br', label='Филиал Б'); pb.fill('#x-name','Тест'); pb.fill('#x-share','150'); pb.click('[data-save]')
     check('доля больше 100 блокируется', 'не больше 100' in pb.inner_text('#x-err')); pb.click('[data-cancel]')
     check('нет ошибок JS (филиалы)', not eb, eb)
+    # возвраты дивидендов и вложений уменьшают выплаченное и вложенное
+    seedC = dict(seedB); seedC['extraArticles'] = [
+      {'id':44,'name':'Возврат дивидендов Андрей','kind':'income','dds_section':'financing','opu_group':None,'sort':193,'active':True},
+      {'id':42,'name':'Возврат вложений Андрей','kind':'expense','dds_section':'financing','opu_group':None,'sort':186,'active':True}]
+    seedC['ops'] = seedB['ops'] + [
+      {'id':5,'branch_id':2,'op_date':'2026-11-05','account_id':2,'article_id':44,'object_id':2,'period':None,'amount':4300},
+      {'id':6,'branch_id':2,'op_date':'2026-11-05','account_id':2,'article_id':24,'object_id':2,'period':None,'amount':9000},
+      {'id':7,'branch_id':2,'op_date':'2026-11-06','account_id':2,'article_id':42,'object_id':2,'period':None,'amount':2000}]
+    pc, ec = new_page(b, "window.__SEED__=%s;" % json.dumps(seedC))
+    pc.click('[data-tab=own]'); row_a = pc.inner_text('tr:has-text("Андрей")')
+    check('возврат дивидендов: выплачено 10 000 (14 300 - 4 300)', '10 000' in row_a, row_a)
+    check('возврат дивидендов: остаток к выплате 4 300', '4 300' in row_a, row_a)
+    check('возврат вложений: вложено 7 000 (9 000 - 2 000)', '7 000' in row_a, row_a)
+    pc.select_option('#branch-sel', label='Все филиалы'); pc.click('[data-tab=cons]')
+    pc.fill('#k-from','2026-01'); pc.dispatch_event('#k-from','change'); pc.fill('#k-to','2026-12'); pc.dispatch_event('#k-to','change')
+    check('свод: дивиденды за вычетом возврата 10 000', '10 000' in pc.inner_text('main'), pc.inner_text('main')[-400:])
+    check('нет ошибок JS (возвраты)', not ec, ec)
     b.close()
 srv.terminate()
 print('\nFAILED:', fails if fails else 'нет')
