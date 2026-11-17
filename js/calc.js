@@ -56,6 +56,9 @@ export function balanceAt(date, accounts, ops, arts, accountId = null) {
   return r2(b);
 }
 
+const monthEnd = k => { const [y, m] = k.split('-').map(Number); return `${k}-${String(new Date(Date.UTC(y, m, 0)).getUTCDate()).padStart(2, '0')}`; };
+const addDay = d => { const t = new Date(d + 'T00:00:00Z'); t.setUTCDate(t.getUTCDate() + 1); return t.toISOString().slice(0, 10); };
+function dayList(a, b) { const out = []; for (let d = a; d <= b; d = addDay(d)) out.push(d); return out; }
 function nextMonthStart(k) { let [y, m] = k.split('-').map(Number); m++; if (m > 12) { m = 1; y++; } return `${y}-${String(m).padStart(2, '0')}-01`; }
 
 // Отчёт ДДС. objectIds: null = свод по всем объектам, иначе массив id. mode: 'months' | 'objects'
@@ -66,6 +69,8 @@ export function ddsReport({ ops, arts, objects, accounts, from, to, objectId = n
     const objs = objects.filter(o => ops.some(x => x.object_id === o.id));
     cols = objs.map(o => String(o.id)); colLabels = objs.map(o => o.name);
     colOf = o => String(o.object_id);
+  } else if (mode === 'days') {
+    cols = dayList(from + '-01', monthEnd(to)); colLabels = cols.map(d => d.slice(8, 10) + '.' + d.slice(5, 7)); colOf = (o, d) => d;
   } else {
     cols = months; colLabels = months.map(monthLabel); colOf = (o, d) => ym(d);
   }
@@ -188,11 +193,10 @@ export function forecast(startBalance, occurrences, arts) {
 }
 
 // Платёжный календарь: факт (операции) + план (запланированные платежи). Просроченный план переносится на сегодня
-const monthEnd = k => { const [y, m] = k.split('-').map(Number); return `${k}-${String(lastDay(y, m)).padStart(2, '0')}`; };
 export function planOccurrences(planned, toDate, today) {
   return expandPlanned(planned, '0001-01-01', toDate).map(o => (o.date < today ? { ...o, overdue: true, plan_date_orig: o.date, date: today } : o));
 }
-export function payCalendar({ ops, planned, arts, objects, accounts: allAccounts, from, to, today, objectId = null }) {
+export function payCalendar({ ops, planned, arts, objects, accounts: allAccounts, from, to, today, objectId = null, view = 'months' }) {
   // счета с отметкой «не учитывать в платёжном календаре» исключаются вместе с их операциями и платежами
   const accounts = allAccounts.filter(a => a.in_calendar !== false), skip = new Set(allAccounts.filter(a => a.in_calendar === false).map(a => a.id));
   ops = ops.filter(o => !skip.has(o.account_id)); planned = planned.filter(p => !skip.has(p.account_id));
@@ -200,17 +204,18 @@ export function payCalendar({ ops, planned, arts, objects, accounts: allAccounts
   const plan = planOccurrences(planned, end, today);
   const objOk = o => objectId == null || o.object_id === objectId;
   const pseudo = plan.map(p => ({ op_date: p.date, article_id: p.article_id, object_id: p.object_id, account_id: p.account_id, amount: p.amount }));
-  const rep = ddsReport({ ops: [...ops, ...pseudo], arts, objects, accounts, from, to, objectId, mode: 'months' });
+  const rep = ddsReport({ ops: [...ops, ...pseudo], arts, objects, accounts, from, to, objectId, mode: view === 'days' ? 'days' : 'months' });
   rep.rows = rep.rows.filter(r => r.type !== 'metric');
   const planNet = d => plan.reduce((s, p) => s + (p.date < d ? signed(p, am.get(p.article_id)) : 0), 0);
   const bal = d => r2(balanceAt(d, accounts, ops, arts) + planNet(d));
-  const months = rep.cols;
-  rep.status = Object.fromEntries(months.map(k => [k, monthEnd(k) < today ? 'факт' : k + '-01' > today ? 'план' : 'факт + план']));
+  const cols = rep.cols, isDays = view === 'days';
+  const first = k => (isDays ? k : k + '-01'), next = k => (isDays ? addDay(k) : nextMonthStart(k)), last = k => (isDays ? k : monthEnd(k));
+  rep.status = Object.fromEntries(cols.map(k => [k, last(k) < today ? 'факт' : first(k) > today ? 'план' : 'факт + план']));
   if (objectId == null) {
     const open = {}, close = {};
-    months.forEach(k => { open[k] = bal(k + '-01'); close[k] = bal(nextMonthStart(k)); });
-    rep.rows.push({ type: 'metric', label: 'Остаток на начало', vals: open, total: open[months[0]] });
-    rep.rows.push({ type: 'metric', label: 'Остаток на конец', vals: close, total: close[months[months.length - 1]] });
+    cols.forEach(k => { open[k] = bal(first(k)); close[k] = bal(next(k)); });
+    rep.rows.push({ type: 'metric', label: 'Остаток на начало', vals: open, total: open[cols[0]] });
+    rep.rows.push({ type: 'metric', label: 'Остаток на конец', vals: close, total: close[cols[cols.length - 1]] });
   }
   // список по дням
   const items = [];
@@ -232,7 +237,6 @@ export function payCalendar({ ops, planned, arts, objects, accounts: allAccounts
   const minPlan = planned_.length ? planned_.reduce((m, i) => (i.balance < m.balance ? i : m)) : null;
   return { ...rep, items, opening, closing: objectId == null ? bal(nextMonthStart(to)) : run, todayBalance: r2(balanceAt(addDay(today), accounts, ops, arts)), minPlan, withBalance: objectId == null, skipped: allAccounts.filter(a => skip.has(a.id)) };
 }
-const addDay = d => { const t = new Date(d + 'T00:00:00Z'); t.setUTCDate(t.getUTCDate() + 1); return t.toISOString().slice(0, 10); };
 
 // Контроль данных: что может исказить отчёты
 export function checks(ops, arts) {

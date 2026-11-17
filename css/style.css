@@ -70,5 +70,7 @@ tr.low td.bal{color:var(--red);font-weight:700}
 .branchsel{margin-left:auto;margin-right:12px;max-width:200px;padding:4px 8px;font:inherit}
 
 .xlsbar{display:flex;justify-content:flex-end;margin-bottom:8px}
-tr.planrow td{background:#f6f9ff}
+tr.planrow td{background:color-mix(in srgb,#3b82f6 5%,transparent)}
 .form label.check{flex-direction:row;align-items:center;gap:8px;color:var(--ink);font-size:14px}
+table.rep .plancol{background:color-mix(in srgb,#3b82f6 7%,transparent)}
+table.rep .nowcol{background:color-mix(in srgb,var(--amber) 10%,transparent)}

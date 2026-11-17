@@ -211,3 +211,17 @@ test('платёжный календарь: счёт «не учитывать�
   assert.equal(d.todayBalance, 70); assert.equal(d.closing, 60);
   assert.deepEqual(d.items.map(i => i.amount), [30, 10]); assert.deepEqual(d.skipped.map(a => a.name), ['Мценск']);
 });
+
+test('платёжный календарь по дням: те же строки, колонки по дням, остатки на день', () => {
+  const A = [{ id: 1, name: 'Выручка', kind: 'income', dds_section: 'operating', opu_group: 'Выручка', sort: 1 }, { id: 2, name: 'ЗП', kind: 'expense', dds_section: 'operating', opu_group: 'Прямые расходы', sort: 2 }];
+  const accs = [{ id: 1, name: 'ИП', opening_balance: 100, opening_date: '2026-01-01' }];
+  const ops = [{ op_date: '2026-11-03', account_id: 1, article_id: 2, object_id: 3, amount: 30 }];
+  const planned = [{ id: 1, plan_date: '2026-11-20', article_id: 1, object_id: 3, account_id: 1, amount: 50, recurrence: 'none', done_dates: [] }];
+  const d = payCalendar({ ops, planned, arts: A, objects: [{ id: 3, name: 'X' }], accounts: accs, from: '2026-11', to: '2026-11', today: '2026-11-17', view: 'days' });
+  assert.equal(d.cols.length, 30); assert.equal(d.colLabels[0], '01.11');
+  assert.equal(d.status['2026-11-16'], 'факт'); assert.equal(d.status['2026-11-17'], 'факт + план'); assert.equal(d.status['2026-11-18'], 'план');
+  const row = l => d.rows.find(r => r.label === l);
+  assert.equal(row('Выручка').vals['2026-11-20'], 50); assert.equal(row('ЗП').vals['2026-11-03'], 30);
+  assert.equal(row('Остаток на начало').vals['2026-11-03'], 100); assert.equal(row('Остаток на конец').vals['2026-11-03'], 70);
+  assert.equal(row('Остаток на конец').vals['2026-11-30'], 120); assert.equal(row('Остаток на конец').total, 120);
+});

@@ -103,16 +103,22 @@ with sync_playwright() as pw:
     p.click('#add-plan'); p.fill('#p-date', TD[:8]+'28' if today.day<=28 else TD); p.select_option('#p-art',label='Аренда офиса и склада'); p.select_option('#p-obj',label='Все объекты'); p.fill('#p-amt','100'); p.select_option('#p-rec','monthly'); p.click('[data-save]'); p.wait_for_timeout(300)
     check('тост платежа', toast(p)=='Платёж внесён', toast(p))
     p.select_option('#c-view','days'); p.wait_for_timeout(200)
-    n = p.locator('tr.planrow').count(); check('ежемесячный платёж размножен до конца периода', n>=2, n)
-    nf = p.locator('main tbody tr').count() - n
-    check('по дням: прошлые операции видны как факт', nf>=1 and 'факт' in p.inner_text('main tbody'), nf)
+    hd = p.inner_text('main table.rep thead'); import calendar as _cal
+    nd = _cal.monthrange(today.year, today.month)[1]
+    check('по дням: та же таблица, колонки по дням месяца', p.locator('main table.rep thead th').count()==nd+2 and TD[8:10]+'.'+TD[5:7] in hd, p.locator('main table.rep thead th').count())
+    check('по дням: прошлые дни факт, будущие план', 'факт' in hd and ('план' in hd or today.day==nd), hd[:200])
+    check('по дням: остатки на начало и конец дня', 'Остаток на начало' in p.inner_text('main table.rep') and 'Остаток на конец' in p.inner_text('main table.rep'))
+    n = p.locator('tr.planrow').count(); check('по дням: список плановых платежей месяца', n>=1, n)
+    nx = (today.replace(day=1)+datetime.timedelta(days=32)).strftime('%Y-%m')
+    p.fill('#c-month', nx); p.dispatch_event('#c-month','change'); p.wait_for_timeout(200)
+    check('ежемесячный платёж есть и в следующем месяце', p.locator('tr.planrow').count()>=1)
+    p.fill('#c-month', TD[:7]); p.dispatch_event('#c-month','change'); p.wait_for_timeout(200)
     p.locator('[data-paid]').first.click(); check('«Оплачено» открывает форму операции с суммой', p.input_value('#o-amt')=='100')
     p.select_option('#o-acc',label='Счет ИП'); p.click('[data-save]'); p.wait_for_timeout(400)
     check('оплаченный платёж ушёл из плана', p.locator('tr.planrow').count()==n-1, p.locator('tr.planrow').count())
-    check('и появился в факте', p.locator('main tbody tr').count()-p.locator('tr.planrow').count()==nf+1)
     if today.day > 1:
         p.click('#add-plan'); p.fill('#p-date', TD[:8]+'01'); p.select_option('#p-art',label='Аренда офиса и склада'); p.select_option('#p-obj',label='Все объекты'); p.fill('#p-amt','7'); p.click('[data-save]'); p.wait_for_timeout(300)
-        check('просроченный платёж стоит на сегодня с пометкой', 'просрочено с 01.' in p.inner_text('main tbody'))
+        check('просроченный платёж стоит на сегодня с пометкой', 'просрочено с 01.' in p.inner_text('main'))
     p.locator('[data-pdel]').first.click(); check('удаление платежа спрашивает подтверждение', 'Удалить' in p.inner_text('.modal h3')); p.click('[data-no]')
     p.select_option('#c-obj', index=1); p.wait_for_timeout(200)
     check('отбор по объекту: без остатков', 'Выбран один объект' in p.inner_text('main'))

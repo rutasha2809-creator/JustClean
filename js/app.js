@@ -126,7 +126,7 @@ function xlsMeta() {
   if (S.tab === 'dds' || S.tab === 'opu') { m.push('Период: ' + perLabel(r.from, r.to)); m.push('Разрез: ' + (r.mode === 'objects' ? 'по объектам' : 'по месяцам') + (r.mode !== 'objects' && r.object ? ', объект: ' + objName(+r.object) : '')); }
   if (S.tab === 'prof') m.push('Период: ' + perLabel(S.prof.from, S.prof.to));
   if (S.tab === 'cons') m.push('Период: ' + perLabel(S.cons.from, S.cons.to));
-  if (S.tab === 'cal') { m.push('Период: ' + perLabel(S.cal.from, S.cal.to) + ', ' + (S.cal.view === 'days' ? 'по дням' : 'по месяцам') + (S.cal.object ? ', объект: ' + objName(+S.cal.object) : '')); m.push('Прошедшие даты по факту, будущие по плану; сегодня ' + fmtDate(todayStr())); }
+  if (S.tab === 'cal') { m.push('Период: ' + (S.cal.view === 'days' ? monthLabel(S.cal.month) + ', по дням' : perLabel(S.cal.from, S.cal.to) + ', по месяцам') + (S.cal.object ? ', объект: ' + objName(+S.cal.object) : '')); m.push('Прошедшие даты по факту, будущие по плану; сегодня ' + fmtDate(todayStr())); }
   if (S.tab === 'ops') {
     const f = S.f, parts = [];
     if (f.month) parts.push('месяц ' + monthLabel(f.month)); if (f.object) parts.push('объект ' + objName(+f.object));
@@ -277,9 +277,10 @@ function repControls(withBalance) {
     <label ${r.mode === 'objects' ? 'class="hidden"' : ''}>Объект<select id="r-obj"><option value="">Свод по всем</option>${opt(sObjects(), r.object, o => o.name + sfx(o))}</select></label></div>`;
 }
 function matrixTable(rep) {
-  const cell = (row, v) => { const pc = row.type === 'percent'; return `<td class="num ${v < 0 ? 'neg' : ''}">${v == null ? '' : pc ? (v === 0 ? '-' : fmt(v) + '%') : fmt(v)}</td>`; };
-  return `<div class="tablewrap"><table class="rep"><thead><tr><th>Статья</th>${rep.colLabels.map(l => `<th class="num">${esc(l)}</th>`).join('')}<th class="num">Итого</th></tr></thead><tbody>
-  ${rep.rows.map(r => r.type === 'section' ? `<tr class="section"><td colspan="${rep.cols.length + 2}">${esc(r.label)}</td></tr>` : `<tr class="${r.type}"><td>${esc(r.label)}</td>${rep.cols.map(c => cell(r, r.vals[c])).join('')}${cell(r, r.total)}</tr>`).join('')}
+  const cc = c => (rep.colClass ? ' ' + (rep.colClass[c] || '') : '');
+  const cell = (row, v, c) => { const pc = row.type === 'percent'; return `<td class="num ${v < 0 ? 'neg' : ''}${c ? cc(c) : ''}">${v == null ? '' : pc ? (v === 0 ? '-' : fmt(v) + '%') : fmt(v)}</td>`; };
+  return `<div class="tablewrap"><table class="rep"><thead><tr><th>Статья</th>${rep.colLabels.map((l, i) => `<th class="num${cc(rep.cols[i])}">${esc(l)}</th>`).join('')}<th class="num">Итого</th></tr></thead><tbody>
+  ${rep.rows.map(r => r.type === 'section' ? `<tr class="section"><td colspan="${rep.cols.length + 2}">${esc(r.label)}</td></tr>` : `<tr class="${r.type}"><td>${esc(r.label)}</td>${rep.cols.map(c => cell(r, r.vals[c], c)).join('')}${cell(r, r.total)}</tr>`).join('')}
   </tbody></table></div>`;
 }
 function repArgs() {
@@ -359,33 +360,32 @@ function bindCons() { ['from', 'to'].forEach(k => ($('#k-' + k).onchange = () =>
 function calDefaults() {
   const t = todayStr(), y = t.slice(0, 4), d = new Date(t + 'T00:00:00Z'); d.setUTCMonth(d.getUTCMonth() + 2);
   const plus2 = d.toISOString().slice(0, 7);
-  return { from: y + '-01', to: plus2 > y + '-12' ? plus2 : y + '-12', view: 'months', object: '' };
+  return { from: y + '-01', to: plus2 > y + '-12' ? plus2 : y + '-12', month: t.slice(0, 7), view: 'months', object: '' };
 }
 function viewCal() {
-  const c = S.cal, today = todayStr(), to = c.to < c.from ? c.from : c.to;
-  const d = payCalendar({ ops: sOps(), planned: sPlanned(), arts: S.articles, objects: labeled(sObjects()), accounts: sAccounts(), from: c.from, to, today, objectId: c.object ? +c.object : null });
-  d.colLabels = d.cols.map(k => monthLabel(k) + ' ' + d.status[k]);
+  const c = S.cal, today = todayStr(), days = c.view === 'days';
+  const from = days ? c.month : c.from, to = days ? c.month : (c.to < c.from ? c.from : c.to);
+  const d = payCalendar({ ops: sOps(), planned: sPlanned(), arts: S.articles, objects: labeled(sObjects()), accounts: sAccounts(), from, to, today, objectId: c.object ? +c.object : null, view: days ? 'days' : 'months' });
+  d.colLabels = d.cols.map((k, i) => (days ? d.colLabels[i] : monthLabel(k)) + ' ' + d.status[k]);
+  d.colClass = Object.fromEntries(d.cols.map(k => [k, d.status[k] === 'план' ? 'plancol' : d.status[k] === 'факт' ? '' : 'nowcol']));
   const sumB = v => (fmt(v) === '-' ? '0' : fmt(v));
   const summary = d.withBalance ? `<div class="summary"><span>Остаток на сегодня: <b class="${d.todayBalance < 0 ? 'neg' : ''}">${sumB(d.todayBalance)}</b></span><span>Остаток на конец периода (с учётом плана): <b class="${d.closing < 0 ? 'neg' : ''}">${sumB(d.closing)}</b></span>${d.minPlan ? `<span>Минимальный остаток по плану: <b class="${d.minPlan.balance < 0 ? 'neg' : ''}">${sumB(d.minPlan.balance)}</b> на ${fmtDate(d.minPlan.date)}</span>` : ''}${d.skipped.length ? `<span class="muted">Не учтены счета: ${esc(d.skipped.map(a => a.name).join(', '))}</span>` : ''}</div>`
     : '<div class="summary"><span class="muted">Выбран один объект: показаны только его поступления и платежи, остатки по счетам не считаются</span></div>';
   const objs = sObjects().filter(o => o.active || d.items.some(i => i.object_id === o.id));
-  const toolbar = `<div class="toolbar"><label>С<input type="month" id="c-from" value="${c.from}"></label><label>По<input type="month" id="c-to" value="${c.to}"></label>
-    <label>Вид<select id="c-view"><option value="months" ${c.view === 'months' ? 'selected' : ''}>По месяцам</option><option value="days" ${c.view === 'days' ? 'selected' : ''}>По дням</option></select></label>
+  const period = days ? `<label>Месяц<input type="month" id="c-month" value="${c.month}"></label>` : `<label>С<input type="month" id="c-from" value="${c.from}"></label><label>По<input type="month" id="c-to" value="${c.to}"></label>`;
+  const toolbar = `<div class="toolbar">${period}
+    <label>Вид<select id="c-view"><option value="months" ${!days ? 'selected' : ''}>По месяцам</option><option value="days" ${days ? 'selected' : ''}>По дням</option></select></label>
     <label>Объект<select id="c-obj"><option value="">Все объекты</option>${labeled(objs).map(o => `<option value="${o.id}" ${String(o.id) === String(c.object) ? 'selected' : ''}>${esc(o.name)}</option>`).join('')}</select></label>
     <span class="spacer"></span>${isEditor() ? '<button class="btn primary" id="add-plan">Добавить платёж</button>' : ''}</div>`;
-  let body;
-  if (c.view === 'months') body = matrixTable(d);
-  else body = `<div class="tablewrap"><table><thead><tr><th>Дата</th><th>Факт / план</th><th>Статья</th><th>Объект</th><th>Счёт</th><th>Комментарий</th><th class="num">Сумма</th><th class="num">${d.withBalance ? 'Остаток после' : 'Нарастающий итог'}</th><th></th></tr></thead><tbody>
-    ${d.items.map(i => `<tr class="${i.kind === 'plan' ? 'planrow' : ''} ${i.overdue ? 'overdue' : ''} ${i.balance < 0 && d.withBalance ? 'low' : ''}"><td>${fmtDate(i.date)}</td>
-    <td>${i.kind === 'fact' ? 'факт' : `<span class="badge">план</span>${i.overdue ? ` <span class="badge warn">просрочено с ${fmtDate(i.plan_date_orig)}</span>` : ''}${i.recurrence === 'monthly' ? ' <span class="badge">ежемесячно</span>' : ''}`}</td>
-    <td>${esc(artName(i.article_id))}</td><td>${esc(objName(i.object_id))}</td><td>${i.account_id ? esc(accName(i.account_id)) : ''}</td><td>${esc([i.counterparty, i.comment].filter(Boolean).join(': '))}</td>
-    <td class="num ${i.sign < 0 ? 'neg' : 'pos'}">${fmt(i.sign * i.amount)}</td><td class="num ${i.balance < 0 ? 'neg' : ''}">${fmt(i.balance)}</td>
-    <td>${i.kind === 'plan' && isEditor() ? `<button class="link" data-paid="${i.plan_id}|${i.plan_date_orig || i.date}|${i.date}">Оплачено</button><button class="link" data-pedit="${i.plan_id}">Изменить</button><button class="link danger" data-pdel="${i.plan_id}">Удалить</button>` : ''}</td></tr>`).join('') || `<tr><td colspan="9" class="muted">Нет операций и платежей за период</td></tr>`}
-    </tbody></table></div>`;
-  return `<div class="card"><h3 style="margin-top:0">Платёжный календарь</h3>${toolbar}${summary}${body}</div>`;
+  const plans = d.items.filter(i => i.kind === 'plan');
+  const planList = !days ? '' : `<h3>Плановые платежи за ${esc(monthLabel(c.month))}</h3>${plans.length ? `<div class="tablewrap"><table><thead><tr><th>Дата</th><th>Статья</th><th>Объект</th><th>Счёт</th><th>Комментарий</th><th class="num">Сумма</th><th></th></tr></thead><tbody>
+    ${plans.map(i => `<tr class="planrow ${i.overdue ? 'overdue' : ''}"><td>${fmtDate(i.date)}${i.overdue ? ` <span class="badge warn">просрочено с ${fmtDate(i.plan_date_orig)}</span>` : ''}${i.recurrence === 'monthly' ? ' <span class="badge">ежемесячно</span>' : ''}</td>
+    <td>${esc(artName(i.article_id))}</td><td>${esc(objName(i.object_id))}</td><td>${i.account_id ? esc(accName(i.account_id)) : ''}</td><td>${esc(i.comment)}</td><td class="num ${i.sign < 0 ? 'neg' : 'pos'}">${fmt(i.sign * i.amount)}</td>
+    <td>${isEditor() ? `<button class="link" data-paid="${i.plan_id}|${i.plan_date_orig || i.date}|${i.date}">Оплачено</button><button class="link" data-pedit="${i.plan_id}">Изменить</button><button class="link danger" data-pdel="${i.plan_id}">Удалить</button>` : ''}</td></tr>`).join('')}</tbody></table></div>` : '<p class="muted">Плановых платежей в этом месяце нет</p>'}`;
+  return `<div class="card"><h3 style="margin-top:0">Платёжный календарь</h3>${toolbar}${summary}${matrixTable(d)}${planList}</div>`;
 }
 function bindCal() {
-  [['from', 'c-from'], ['to', 'c-to'], ['view', 'c-view'], ['object', 'c-obj']].forEach(([k, id]) => ($('#' + id).onchange = () => { S.cal[k] = $('#' + id).value; render(); }));
+  [['from', 'c-from'], ['to', 'c-to'], ['month', 'c-month'], ['view', 'c-view'], ['object', 'c-obj']].forEach(([k, id]) => $('#' + id) && ($('#' + id).onchange = () => { S.cal[k] = $('#' + id).value; render(); }));
   $('#add-plan') && ($('#add-plan').onclick = () => openPlanForm(null));
   document.querySelectorAll('[data-pedit]').forEach(b => (b.onclick = () => openPlanForm(byId(S.planned, +b.dataset.pedit))));
   document.querySelectorAll('[data-pdel]').forEach(b => (b.onclick = async () => {
