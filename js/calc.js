@@ -187,6 +187,53 @@ export function forecast(startBalance, occurrences, arts) {
   return occurrences.map(o => { const a = am.get(o.article_id); bal = r2(bal + signed(o, a)); return { ...o, sign: a.kind === 'income' ? 1 : -1, balance: bal }; });
 }
 
+// Платёжный календарь: факт (операции) + план (запланированные платежи). Просроченный план переносится на сегодня
+const monthEnd = k => { const [y, m] = k.split('-').map(Number); return `${k}-${String(lastDay(y, m)).padStart(2, '0')}`; };
+export function planOccurrences(planned, toDate, today) {
+  return expandPlanned(planned, '0001-01-01', toDate).map(o => (o.date < today ? { ...o, overdue: true, plan_date_orig: o.date, date: today } : o));
+}
+export function payCalendar({ ops, planned, arts, objects, accounts: allAccounts, from, to, today, objectId = null }) {
+  // счета с отметкой «не учитывать в платёжном календаре» исключаются вместе с их операциями и платежами
+  const accounts = allAccounts.filter(a => a.in_calendar !== false), skip = new Set(allAccounts.filter(a => a.in_calendar === false).map(a => a.id));
+  ops = ops.filter(o => !skip.has(o.account_id)); planned = planned.filter(p => !skip.has(p.account_id));
+  const am = artMap(arts), start = from + '-01', end = monthEnd(to);
+  const plan = planOccurrences(planned, end, today);
+  const objOk = o => objectId == null || o.object_id === objectId;
+  const pseudo = plan.map(p => ({ op_date: p.date, article_id: p.article_id, object_id: p.object_id, account_id: p.account_id, amount: p.amount }));
+  const rep = ddsReport({ ops: [...ops, ...pseudo], arts, objects, accounts, from, to, objectId, mode: 'months' });
+  rep.rows = rep.rows.filter(r => r.type !== 'metric');
+  const planNet = d => plan.reduce((s, p) => s + (p.date < d ? signed(p, am.get(p.article_id)) : 0), 0);
+  const bal = d => r2(balanceAt(d, accounts, ops, arts) + planNet(d));
+  const months = rep.cols;
+  rep.status = Object.fromEntries(months.map(k => [k, monthEnd(k) < today ? 'факт' : k + '-01' > today ? 'план' : 'факт + план']));
+  if (objectId == null) {
+    const open = {}, close = {};
+    months.forEach(k => { open[k] = bal(k + '-01'); close[k] = bal(nextMonthStart(k)); });
+    rep.rows.push({ type: 'metric', label: 'Остаток на начало', vals: open, total: open[months[0]] });
+    rep.rows.push({ type: 'metric', label: 'Остаток на конец', vals: close, total: close[months[months.length - 1]] });
+  }
+  // список по дням
+  const items = [];
+  for (const o of ops) {
+    const a = am.get(o.article_id);
+    if (!a || !o.op_date || a.dds_section === 'internal' || o.op_date < start || o.op_date > end || !objOk(o)) continue;
+    items.push({ kind: 'fact', date: o.op_date, op: o, article_id: o.article_id, object_id: o.object_id, account_id: o.account_id, amount: Number(o.amount), comment: o.comment || '', counterparty: o.counterparty || '' });
+  }
+  for (const p of plan) {
+    const a = am.get(p.article_id);
+    if (!a || a.dds_section === 'internal' || p.date < start || p.date > end || !objOk(p)) continue;
+    items.push({ kind: 'plan', date: p.date, plan: p, plan_id: p.plan_id, overdue: !!p.overdue, plan_date_orig: p.plan_date_orig, recurrence: p.recurrence, article_id: p.article_id, object_id: p.object_id, account_id: p.account_id, amount: Number(p.amount), comment: p.comment || '' });
+  }
+  items.sort((x, y) => x.date.localeCompare(y.date) || (x.kind === y.kind ? 0 : x.kind === 'fact' ? -1 : 1));
+  let run = objectId == null ? bal(start) : 0;
+  const opening = run;
+  for (const it of items) { it.sign = am.get(it.article_id).kind === 'income' ? 1 : -1; run = r2(run + it.sign * it.amount); it.balance = run; }
+  const planned_ = items.filter(i => i.kind === 'plan');
+  const minPlan = planned_.length ? planned_.reduce((m, i) => (i.balance < m.balance ? i : m)) : null;
+  return { ...rep, items, opening, closing: objectId == null ? bal(nextMonthStart(to)) : run, todayBalance: r2(balanceAt(addDay(today), accounts, ops, arts)), minPlan, withBalance: objectId == null, skipped: allAccounts.filter(a => skip.has(a.id)) };
+}
+const addDay = d => { const t = new Date(d + 'T00:00:00Z'); t.setUTCDate(t.getUTCDate() + 1); return t.toISOString().slice(0, 10); };
+
 // Контроль данных: что может исказить отчёты
 export function checks(ops, arts) {
   const am = artMap(arts), out = [];

@@ -1,6 +1,6 @@
 import { createApi } from './api.js';
 import { rowsFromScreen, downloadXlsx } from './xls.js';
-import { ddsReport, opuReport, profitability, expandPlanned, forecast, balanceAt, checks, internalImbalance, monthLabel, ym, r2, opuGroup } from './calc.js';
+import { ddsReport, opuReport, profitability, payCalendar, balanceAt, checks, internalImbalance, monthLabel, ym, r2, opuGroup } from './calc.js';
 
 const api = window.__API__ || createApi();
 const $ = (s, r = document) => r.querySelector(s);
@@ -17,7 +17,7 @@ const S = {
   f: { month: '', object: '', account: '', article: '', q: '', limit: 200 },
   rep: { from: `${new Date().getFullYear()}-01`, to: ym(todayStr()), object: '', mode: 'months' },
   prof: { from: `${new Date().getFullYear()}-01`, to: ym(todayStr()) },
-  cal: { days: 60 },
+  cal: calDefaults(),
   cons: { from: `${new Date().getFullYear()}-01`, to: ym(todayStr()) },
 };
 const isEditor = () => S.role === 'editor';
@@ -126,7 +126,7 @@ function xlsMeta() {
   if (S.tab === 'dds' || S.tab === 'opu') { m.push('Период: ' + perLabel(r.from, r.to)); m.push('Разрез: ' + (r.mode === 'objects' ? 'по объектам' : 'по месяцам') + (r.mode !== 'objects' && r.object ? ', объект: ' + objName(+r.object) : '')); }
   if (S.tab === 'prof') m.push('Период: ' + perLabel(S.prof.from, S.prof.to));
   if (S.tab === 'cons') m.push('Период: ' + perLabel(S.cons.from, S.cons.to));
-  if (S.tab === 'cal') m.push('Горизонт: ' + S.cal.days + ' дней от ' + fmtDate(todayStr()));
+  if (S.tab === 'cal') { m.push('Период: ' + perLabel(S.cal.from, S.cal.to) + ', ' + (S.cal.view === 'days' ? 'по дням' : 'по месяцам') + (S.cal.object ? ', объект: ' + objName(+S.cal.object) : '')); m.push('Прошедшие даты по факту, будущие по плану; сегодня ' + fmtDate(todayStr())); }
   if (S.tab === 'ops') {
     const f = S.f, parts = [];
     if (f.month) parts.push('месяц ' + monthLabel(f.month)); if (f.object) parts.push('объект ' + objName(+f.object));
@@ -356,21 +356,36 @@ function viewCons() {
 function bindCons() { ['from', 'to'].forEach(k => ($('#k-' + k).onchange = () => { S.cons[k] = $('#k-' + k).value; render(); })); }
 
 /* ---------- Платёжный календарь ---------- */
+function calDefaults() {
+  const t = todayStr(), y = t.slice(0, 4), d = new Date(t + 'T00:00:00Z'); d.setUTCMonth(d.getUTCMonth() + 2);
+  const plus2 = d.toISOString().slice(0, 7);
+  return { from: y + '-01', to: plus2 > y + '-12' ? plus2 : y + '-12', view: 'months', object: '' };
+}
 function viewCal() {
-  const today = todayStr(), horizon = addDays(today, S.cal.days);
-  const occ = expandPlanned(sPlanned(), '0001-01-01', horizon);
-  const start = balanceAt(addDays(today, 1), sAccounts(), sOps(), S.articles);
-  const rows = forecast(start, occ, S.articles);
-  return `<div class="card"><div class="toolbar"><label>Горизонт<select id="c-days">${[30, 60, 90, 180].map(d => `<option value="${d}" ${S.cal.days === d ? 'selected' : ''}>${d} дней</option>`).join('')}</select></label>
-    <span class="spacer"></span>${isEditor() ? '<button class="btn primary" id="add-plan">Добавить платёж</button>' : ''}</div>
-    <div class="summary"><span>Остаток на сегодня: <b class="${start < 0 ? 'neg' : ''}">${fmt(start) === '-' ? '0' : fmt(start)}</b></span></div>
-    <div class="tablewrap"><table><thead><tr><th>Дата</th><th>Статья</th><th>Объект</th><th>Счёт</th><th>Комментарий</th><th class="num">Сумма</th><th class="num">Остаток после</th><th></th></tr></thead><tbody>
-    ${rows.map(o => `<tr class="${o.date < today ? 'overdue' : ''} ${o.balance < 0 ? 'low' : ''}"><td>${fmtDate(o.date)}${o.date < today ? ' <span class="badge warn">просрочено</span>' : ''}${o.recurrence === 'monthly' ? ' <span class="badge">ежемесячно</span>' : ''}</td><td>${esc(artName(o.article_id))}</td><td>${esc(objName(o.object_id))}</td><td>${esc(accName(o.account_id))}</td><td class="wrap">${esc(o.comment)}</td><td class="num ${o.sign > 0 ? 'pos' : 'neg'}">${o.sign > 0 ? '' : '-'}${fmt(Number(o.amount))}</td><td class="num bal">${fmt(o.balance) === '-' ? '0' : fmt(o.balance)}</td>
-    <td>${isEditor() ? `<button class="link" data-paid="${o.plan_id}|${o.date}">Оплачено</button><button class="link" data-pedit="${o.plan_id}">Изменить</button><button class="link danger" data-pdel="${o.plan_id}">Удалить</button>` : ''}</td></tr>`).join('') || '<tr><td colspan="8" class="muted">Запланированных платежей нет</td></tr>'}
-    </tbody></table></div></div>`;
+  const c = S.cal, today = todayStr(), to = c.to < c.from ? c.from : c.to;
+  const d = payCalendar({ ops: sOps(), planned: sPlanned(), arts: S.articles, objects: labeled(sObjects()), accounts: sAccounts(), from: c.from, to, today, objectId: c.object ? +c.object : null });
+  d.colLabels = d.cols.map(k => monthLabel(k) + ' ' + d.status[k]);
+  const sumB = v => (fmt(v) === '-' ? '0' : fmt(v));
+  const summary = d.withBalance ? `<div class="summary"><span>Остаток на сегодня: <b class="${d.todayBalance < 0 ? 'neg' : ''}">${sumB(d.todayBalance)}</b></span><span>Остаток на конец периода (с учётом плана): <b class="${d.closing < 0 ? 'neg' : ''}">${sumB(d.closing)}</b></span>${d.minPlan ? `<span>Минимальный остаток по плану: <b class="${d.minPlan.balance < 0 ? 'neg' : ''}">${sumB(d.minPlan.balance)}</b> на ${fmtDate(d.minPlan.date)}</span>` : ''}${d.skipped.length ? `<span class="muted">Не учтены счета: ${esc(d.skipped.map(a => a.name).join(', '))}</span>` : ''}</div>`
+    : '<div class="summary"><span class="muted">Выбран один объект: показаны только его поступления и платежи, остатки по счетам не считаются</span></div>';
+  const objs = sObjects().filter(o => o.active || d.items.some(i => i.object_id === o.id));
+  const toolbar = `<div class="toolbar"><label>С<input type="month" id="c-from" value="${c.from}"></label><label>По<input type="month" id="c-to" value="${c.to}"></label>
+    <label>Вид<select id="c-view"><option value="months" ${c.view === 'months' ? 'selected' : ''}>По месяцам</option><option value="days" ${c.view === 'days' ? 'selected' : ''}>По дням</option></select></label>
+    <label>Объект<select id="c-obj"><option value="">Все объекты</option>${labeled(objs).map(o => `<option value="${o.id}" ${String(o.id) === String(c.object) ? 'selected' : ''}>${esc(o.name)}</option>`).join('')}</select></label>
+    <span class="spacer"></span>${isEditor() ? '<button class="btn primary" id="add-plan">Добавить платёж</button>' : ''}</div>`;
+  let body;
+  if (c.view === 'months') body = matrixTable(d);
+  else body = `<div class="tablewrap"><table><thead><tr><th>Дата</th><th>Факт / план</th><th>Статья</th><th>Объект</th><th>Счёт</th><th>Комментарий</th><th class="num">Сумма</th><th class="num">${d.withBalance ? 'Остаток после' : 'Нарастающий итог'}</th><th></th></tr></thead><tbody>
+    ${d.items.map(i => `<tr class="${i.kind === 'plan' ? 'planrow' : ''} ${i.overdue ? 'overdue' : ''} ${i.balance < 0 && d.withBalance ? 'low' : ''}"><td>${fmtDate(i.date)}</td>
+    <td>${i.kind === 'fact' ? 'факт' : `<span class="badge">план</span>${i.overdue ? ` <span class="badge warn">просрочено с ${fmtDate(i.plan_date_orig)}</span>` : ''}${i.recurrence === 'monthly' ? ' <span class="badge">ежемесячно</span>' : ''}`}</td>
+    <td>${esc(artName(i.article_id))}</td><td>${esc(objName(i.object_id))}</td><td>${i.account_id ? esc(accName(i.account_id)) : ''}</td><td>${esc([i.counterparty, i.comment].filter(Boolean).join(': '))}</td>
+    <td class="num ${i.sign < 0 ? 'neg' : 'pos'}">${fmt(i.sign * i.amount)}</td><td class="num ${i.balance < 0 ? 'neg' : ''}">${fmt(i.balance)}</td>
+    <td>${i.kind === 'plan' && isEditor() ? `<button class="link" data-paid="${i.plan_id}|${i.plan_date_orig || i.date}|${i.date}">Оплачено</button><button class="link" data-pedit="${i.plan_id}">Изменить</button><button class="link danger" data-pdel="${i.plan_id}">Удалить</button>` : ''}</td></tr>`).join('') || `<tr><td colspan="9" class="muted">Нет операций и платежей за период</td></tr>`}
+    </tbody></table></div>`;
+  return `<div class="card"><h3 style="margin-top:0">Платёжный календарь</h3>${toolbar}${summary}${body}</div>`;
 }
 function bindCal() {
-  $('#c-days').onchange = () => { S.cal.days = +$('#c-days').value; render(); };
+  [['from', 'c-from'], ['to', 'c-to'], ['view', 'c-view'], ['object', 'c-obj']].forEach(([k, id]) => ($('#' + id).onchange = () => { S.cal[k] = $('#' + id).value; render(); }));
   $('#add-plan') && ($('#add-plan').onclick = () => openPlanForm(null));
   document.querySelectorAll('[data-pedit]').forEach(b => (b.onclick = () => openPlanForm(byId(S.planned, +b.dataset.pedit))));
   document.querySelectorAll('[data-pdel]').forEach(b => (b.onclick = async () => {
@@ -379,9 +394,9 @@ function bindCal() {
     if (await confirmDialog(txt)) run(() => api.remove('planned', p.id), 'Платёж удалён');
   }));
   document.querySelectorAll('[data-paid]').forEach(b => (b.onclick = () => {
-    const [id, date] = b.dataset.paid.split('|'), p = byId(S.planned, +id), a = byId(S.articles, p.article_id);
+    const [id, planDate, payDate] = b.dataset.paid.split('|'), p = byId(S.planned, +id), a = byId(S.articles, p.article_id), date = payDate || planDate;
     openOpForm(null, { branch_id: p.branch_id, op_date: date, account_id: p.account_id || '', article_id: p.article_id, object_id: p.object_id, amount: p.amount, comment: p.comment || '', period: a.opu_group ? date.slice(0, 7) + '-01' : null },
-      () => api.update('planned', p.id, { done_dates: [...(p.done_dates || []), date] }));
+      () => api.update('planned', p.id, { done_dates: [...(p.done_dates || []), planDate] }));
   }));
 }
 function openPlanForm(p) {
@@ -418,7 +433,7 @@ const SEC = { operating: 'Операционная', investing: 'Инвести�
 const OPU_GROUPS = ['Выручка', 'Прямые расходы', 'Административные', 'Коммерческие', 'Агентские', 'Прочие доходы и расходы', 'Налоги'];
 const REFS = {
   objects: { title: 'Объекты', table: 'objects', cols: [['Филиал', o => esc(brName(o.branch_id))], ['Название', o => esc(o.name)], ['Юрлицо', o => esc(o.legal_entity)], ['Тип', o => (o.is_common ? 'Общие расходы' : '')]] },
-  accounts: { title: 'Счета', table: 'accounts', cols: [['Филиал', o => esc(brName(o.branch_id))], ['Название', o => esc(o.name)], ['Остаток на начало', o => fmt(Number(o.opening_balance)) === '-' ? '0' : fmt(Number(o.opening_balance))], ['Дата остатка', o => fmtDate(o.opening_date)]] },
+  accounts: { title: 'Счета', table: 'accounts', cols: [['Филиал', o => esc(brName(o.branch_id))], ['Название', o => esc(o.name)], ['Остаток на начало', o => fmt(Number(o.opening_balance)) === '-' ? '0' : fmt(Number(o.opening_balance))], ['Дата остатка', o => fmtDate(o.opening_date)], ['В платёжном календаре', o => (o.in_calendar === false ? 'нет' : 'да')]] },
   branches: { title: 'Филиалы', table: 'branches', cols: [['Название', o => esc(o.name)]] },
   owners: { title: 'Собственники', table: 'owners', cols: [['Филиал', o => esc(brName(o.branch_id))], ['Собственник', o => esc(o.name)], ['Доля, %', o => fmt(Number(o.share))], ['Статья дивидендов', o => esc(artName(o.dividend_article_id))], ['Статья вложений', o => esc(artName(o.contribution_article_id))]] },
   articles: { title: 'Статьи', table: 'articles', cols: [['Название', o => esc(o.name)], ['Вид', o => (o.kind === 'income' ? 'Доход' : 'Расход')], ['ДДС', o => SEC[o.dds_section]], ['ОПУ', o => esc(o.opu_group ? opuGroup(o) : 'не входит')]] },
@@ -457,7 +472,7 @@ function openRefForm(o) {
     owners: `${brSel}<label class="full">Собственник<input id="x-name" value="${esc(o?.name)}"></label><label>Доля, %<input id="x-share" inputmode="decimal" value="${o ? String(o.share).replace('.', ',') : '50'}"></label>
       <label class="full">Статья дивидендов<select id="x-div">${opt(artsOf('expense'), o?.dividend_article_id, undefined, 'Выберите')}</select></label><label class="full">Статья вложений<select id="x-con">${opt(artsOf('income'), o?.contribution_article_id, undefined, 'Выберите')}</select></label>`,
     objects: `${brSel}<label class="full">Название<input id="x-name" value="${esc(o?.name)}"></label><label class="full">Юрлицо<input id="x-legal" value="${esc(o?.legal_entity)}"></label>`,
-    accounts: `${brSel}<label class="full">Название<input id="x-name" value="${esc(o?.name)}"></label><label>Остаток на начало<input id="x-bal" inputmode="decimal" value="${o ? String(o.opening_balance).replace('.', ',') : '0'}"></label><label>Дата остатка<input type="date" id="x-date" value="${o?.opening_date || '2026-01-01'}"></label>`,
+    accounts: `${brSel}<label class="full">Название<input id="x-name" value="${esc(o?.name)}"></label><label>Остаток на начало<input id="x-bal" inputmode="decimal" value="${o ? String(o.opening_balance).replace('.', ',') : '0'}"></label><label>Дата остатка<input type="date" id="x-date" value="${o?.opening_date || '2026-01-01'}"></label><label class="full check"><input type="checkbox" id="x-cal" ${o?.in_calendar === false ? '' : 'checked'}> Учитывать в платёжном календаре</label>`,
     articles: `<label class="full">Название<input id="x-name" value="${esc(o?.name)}"></label>
       <label>Вид<select id="x-kind"><option value="income" ${o?.kind === 'income' ? 'selected' : ''}>Доход</option><option value="expense" ${!o || o.kind === 'expense' ? 'selected' : ''}>Расход</option></select></label>
       <label>Раздел ДДС<select id="x-sec">${Object.entries(SEC).map(([v, t]) => `<option value="${v}" ${o?.dds_section === v ? 'selected' : ''}>${t}</option>`).join('')}</select></label>
@@ -474,7 +489,7 @@ function openRefForm(o) {
     if (k === 'branches') row = { name };
     if (k === 'owners') { const sh = parseAmount($('#x-share', m).value); if (!(sh > 0 && sh <= 100)) return err('Доля должна быть больше 0 и не больше 100'); row = { ...(isNew ? { branch_id: bid } : {}), name, share: r2(sh), dividend_article_id: +$('#x-div', m).value || null, contribution_article_id: +$('#x-con', m).value || null }; }
     if (k === 'objects') row = { ...(isNew ? { branch_id: bid } : {}), name, legal_entity: $('#x-legal', m).value.trim() || null };
-    if (k === 'accounts') { const b = parseAmount($('#x-bal', m).value); if (Number.isNaN(b)) return err('Введите остаток числом'); if (!$('#x-date', m).value) return err('Укажите дату остатка'); row = { ...(isNew ? { branch_id: bid } : {}), name, opening_balance: r2(b), opening_date: $('#x-date', m).value }; }
+    if (k === 'accounts') { const b = parseAmount($('#x-bal', m).value); if (Number.isNaN(b)) return err('Введите остаток числом'); if (!$('#x-date', m).value) return err('Укажите дату остатка'); row = { ...(isNew ? { branch_id: bid } : {}), name, opening_balance: r2(b), opening_date: $('#x-date', m).value, in_calendar: $('#x-cal', m).checked }; }
     if (k === 'articles') row = { name, kind: $('#x-kind', m).value, dds_section: $('#x-sec', m).value, opu_group: $('#x-opu', m).value || null, ...(isNew ? { sort: 500 } : {}) };
     if (await run(() => (isNew ? api.insert(R.table, row) : api.update(R.table, o.id, row)), isNew ? 'Данные внесены' : 'Изменения сохранены')) closeModal();
   };

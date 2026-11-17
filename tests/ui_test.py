@@ -96,14 +96,35 @@ with sync_playwright() as pw:
     check('Рентабельность: Лесная 60%', 'Лесная' in t and '60%' in t, t); check('Рентабельность: Борк 100%', '100%' in t)
     hd = p.inner_text('main thead'); check('Рентабельность: колонки адм., коммерческие, агентские, налоги', all(x in hd for x in ['Административные','Коммерческие','Агентские','Налоги и прочее']) and 'Прочие расходы' not in hd, hd)
 
-    # 4. календарь
-    p.click('[data-tab=cal]'); p.click('#add-plan'); p.fill('#p-date', TD[:8]+'28' if today.day<=28 else TD); p.select_option('#p-art',label='Аренда офиса и склада'); p.select_option('#p-obj',label='Все объекты'); p.fill('#p-amt','100'); p.select_option('#p-rec','monthly'); p.click('[data-save]'); p.wait_for_timeout(300)
+    # 4. календарь: прошлое по факту, будущее по плану
+    p.click('[data-tab=cal]'); hd = p.inner_text('main thead')
+    check('календарь по месяцам: колонки факт и план', 'факт' in hd and 'план' in hd, hd)
+    check('календарь: остатки на начало и конец', 'Остаток на начало' in p.inner_text('main') and 'Остаток на конец' in p.inner_text('main'))
+    p.click('#add-plan'); p.fill('#p-date', TD[:8]+'28' if today.day<=28 else TD); p.select_option('#p-art',label='Аренда офиса и склада'); p.select_option('#p-obj',label='Все объекты'); p.fill('#p-amt','100'); p.select_option('#p-rec','monthly'); p.click('[data-save]'); p.wait_for_timeout(300)
     check('тост платежа', toast(p)=='Платёж внесён', toast(p))
-    n = p.locator('main tbody tr').count(); check('ежемесячный платёж размножен на горизонт', n>=2, n)
+    p.select_option('#c-view','days'); p.wait_for_timeout(200)
+    n = p.locator('tr.planrow').count(); check('ежемесячный платёж размножен до конца периода', n>=2, n)
+    nf = p.locator('main tbody tr').count() - n
+    check('по дням: прошлые операции видны как факт', nf>=1 and 'факт' in p.inner_text('main tbody'), nf)
     p.locator('[data-paid]').first.click(); check('«Оплачено» открывает форму операции с суммой', p.input_value('#o-amt')=='100')
     p.select_option('#o-acc',label='Счет ИП'); p.click('[data-save]'); p.wait_for_timeout(400)
-    check('оплаченный платёж исчез из календаря', p.locator('main tbody tr').count()==n-1, p.locator('main tbody tr').count())
-    p.locator('[data-pdel]').first.click(); check('удаление платежа спрашивает подтверждение', 'ежемесячный' in p.inner_text('.modal h3')); p.click('[data-no]')
+    check('оплаченный платёж ушёл из плана', p.locator('tr.planrow').count()==n-1, p.locator('tr.planrow').count())
+    check('и появился в факте', p.locator('main tbody tr').count()-p.locator('tr.planrow').count()==nf+1)
+    if today.day > 1:
+        p.click('#add-plan'); p.fill('#p-date', TD[:8]+'01'); p.select_option('#p-art',label='Аренда офиса и склада'); p.select_option('#p-obj',label='Все объекты'); p.fill('#p-amt','7'); p.click('[data-save]'); p.wait_for_timeout(300)
+        check('просроченный платёж стоит на сегодня с пометкой', 'просрочено с 01.' in p.inner_text('main tbody'))
+    p.locator('[data-pdel]').first.click(); check('удаление платежа спрашивает подтверждение', 'Удалить' in p.inner_text('.modal h3')); p.click('[data-no]')
+    p.select_option('#c-obj', index=1); p.wait_for_timeout(200)
+    check('отбор по объекту: без остатков', 'Выбран один объект' in p.inner_text('main'))
+    p.select_option('#c-obj', ''); p.select_option('#c-view','months'); p.wait_for_timeout(100)
+    # счёт можно исключить из календаря в справочнике
+    p.click('[data-tab=ref]'); p.click('[data-reftab=accounts]'); p.locator('[data-redit]').first.click()
+    check('в форме счёта есть галочка календаря и она включена', p.is_checked('#x-cal'))
+    p.uncheck('#x-cal'); p.click('[data-save]'); p.wait_for_timeout(300)
+    check('справочник счетов: «нет» в колонке календаря', 'нет' in p.inner_text('main tbody'))
+    p.click('[data-tab=cal]'); check('календарь пишет, какие счета не учтены', 'Не учтены счета' in p.inner_text('main'))
+    p.click('[data-tab=ref]'); p.click('[data-reftab=accounts]'); p.locator('[data-redit]').first.click(); p.check('#x-cal'); p.click('[data-save]'); p.wait_for_timeout(300)
+    p.click('[data-tab=cal]'); check('после включения счёт снова учитывается', 'Не учтены счета' not in p.inner_text('main'))
 
     # 5. выход / вход
     p.click('#out'); check('экран входа после выхода', p.is_visible('#in'))
@@ -114,7 +135,7 @@ with sync_playwright() as pw:
     check('просмотр: нет кнопок добавления/правки/удаления', p2.locator('#add-op, [data-edit], [data-del]').count()==0)
     check('просмотр: операция видна', '100' in p2.inner_text('main'))
     p2.click('[data-tab=ref]'); check('просмотр: нет вкладки Доступ и кнопки Добавить', p2.locator('[data-reftab=access], #add-ref, [data-rarch]').count()==0)
-    p2.click('[data-tab=cal]'); check('просмотр: нет кнопок в календаре', p2.locator('#add-plan, [data-paid]').count()==0)
+    p2.click('[data-tab=cal]'); p2.select_option('#c-view','days'); check('просмотр: нет кнопок в календаре', p2.locator('#add-plan, [data-paid], [data-pdel]').count()==0)
     # pending
     p3, e3 = new_page.__call__(b, "window.__ROLE__='pending';") if False else (None,None)
     ctx = b.new_context(); p3 = ctx.new_page(); p3.route('**/cdn.jsdelivr.net/**', lambda r: r.fulfill(status=200, body='', content_type='text/javascript')); p3.add_init_script("window.__ROLE__='pending';"+MOCK); p3.goto(URL); p3.wait_for_selector('#out')
@@ -242,7 +263,7 @@ with sync_playwright() as pw:
     check('выгрузка ОПУ: чистая прибыль', (find(rows,'Чистая прибыль') or [None])[-1]==38600, find(rows,'Чистая прибыль'))
     pb.click('[data-tab=prof]'); pb.fill('#p-from','2026-01'); pb.dispatch_event('#p-from','change'); fn, ws, rows = xls(pb)
     z = find(rows, 'Заказ 1 · Филиал Б'); check('выгрузка рентабельности: проценты долей', z and abs(z[-1]-0.4881)<0.001, z)
-    pb.click('[data-tab=cal]'); fn, ws, rows = xls(pb); check('выгрузка календаря работает', fn.startswith('Платёжный календарь_'), fn)
+    pb.click('[data-tab=cal]'); fn, ws, rows = xls(pb); check('выгрузка календаря работает', fn.startswith('Платёжный календарь_') and find(rows,'Остаток на конец') is not None, fn)
     pb.click('[data-tab=ref]'); check('на справочниках кнопки нет', pb.locator('#xls').count()==0)
     pb.select_option('#branch-sel', label='Филиал Б'); pb.click('[data-tab=ops]'); fn, ws, rows = xls(pb)
     check('выгрузка по филиалу: имя файла и без колонки филиала', 'Филиал Б' in fn and 'Филиал' not in next(r for r in rows if r and r[0]=='Дата оплаты'), fn)
