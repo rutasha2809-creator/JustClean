@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { ddsReport, opuReport, profitability, expandPlanned, forecast, balanceAt, checks, internalImbalance, monthList } from '../js/calc.js';
+import { ddsReport, opuReport, profitability, expandPlanned, forecast, balanceAt, checks, internalImbalance, monthList, payCalendar } from '../js/calc.js';
 
 const arts = [
   { id: 1, name: 'Выручка', kind: 'income', dds_section: 'operating', opu_group: 'Выручка', sort: 1 },
@@ -160,4 +160,54 @@ test('рентабельность: административные, комме
   assert.deepEqual(g.find(x => x[0] === 'Агентские'), ['Агентские', 44]);
   assert.ok(!g.some(x => x[0] === 'Коммерческие и агентские'));
   assert.equal(o.rows.find(x => x.label === 'Чистая прибыль').total, 423);
+});
+
+test('платёжный календарь: прошлое по факту, будущее по плану, просроченное на сегодня', () => {
+  const A = [
+    { id: 1, name: 'Выручка', kind: 'income', dds_section: 'operating', opu_group: 'Выручка', sort: 1 },
+    { id: 2, name: 'ЗП', kind: 'expense', dds_section: 'operating', opu_group: 'Прямые расходы', sort: 2 },
+    { id: 5, name: 'Перем. приход', kind: 'income', dds_section: 'internal', opu_group: null, sort: 5 },
+    { id: 6, name: 'Перем. расход', kind: 'expense', dds_section: 'internal', opu_group: null, sort: 6 },
+  ];
+  const accs = [{ id: 1, name: 'ИП', opening_balance: 1000, opening_date: '2026-01-01', active: true }, { id: 2, name: 'ООО', opening_balance: 0, opening_date: '2026-01-01', active: true }];
+  const objs = [{ id: 3, name: 'Заказ' }, { id: 4, name: 'Другой' }];
+  const ops = [
+    { id: 1, op_date: '2026-10-05', account_id: 1, article_id: 1, object_id: 3, amount: 500 },
+    { id: 2, op_date: '2026-11-03', account_id: 1, article_id: 2, object_id: 3, amount: 200 },
+    { id: 3, op_date: '2026-11-04', account_id: 1, article_id: 6, object_id: 3, amount: 100 },
+    { id: 4, op_date: '2026-11-04', account_id: 2, article_id: 5, object_id: 3, amount: 100 },
+  ];
+  const planned = [
+    { id: 10, plan_date: '2026-11-10', article_id: 2, object_id: 3, account_id: 1, amount: 50, recurrence: 'none', done_dates: [] },        // просрочен -> на сегодня
+    { id: 11, plan_date: '2026-11-20', article_id: 1, object_id: 4, account_id: null, amount: 300, recurrence: 'monthly', done_dates: [] }, // без счёта
+  ];
+  const d = payCalendar({ ops, planned, arts: A, objects: objs, accounts: accs, from: '2026-10', to: '2026-12', today: '2026-11-17' });
+  assert.deepEqual(d.status, { '2026-10': 'факт', '2026-11': 'факт + план', '2026-12': 'план' });
+  const row = l => d.rows.find(r => r.label === l);
+  assert.deepEqual(row('Остаток на начало').vals, { '2026-10': 1000, '2026-11': 1500, '2026-12': 1550 });
+  assert.deepEqual(row('Остаток на конец').vals, { '2026-10': 1500, '2026-11': 1550, '2026-12': 1850 });
+  assert.equal(d.todayBalance, 1300); assert.equal(d.closing, 1850);
+  assert.ok(!d.items.some(i => i.article_id === 5 || i.article_id === 6), 'перемещения не показываются');
+  const over = d.items.find(i => i.plan_id === 10);
+  assert.equal(over.date, '2026-11-17'); assert.equal(over.overdue, true); assert.equal(over.plan_date_orig, '2026-11-10');
+  assert.deepEqual(d.items.map(i => [i.kind, i.date, i.balance]), [['fact', '2026-10-05', 1500], ['fact', '2026-11-03', 1300], ['plan', '2026-11-17', 1250], ['plan', '2026-11-20', 1550], ['plan', '2026-12-20', 1850]]);
+  assert.equal(d.minPlan.balance, 1250);
+  // отбор по объекту: без остатков
+  const o = payCalendar({ ops, planned, arts: A, objects: objs, accounts: accs, from: '2026-10', to: '2026-12', today: '2026-11-17', objectId: 4 });
+  assert.equal(o.withBalance, false); assert.ok(!o.rows.some(r => r.type === 'metric'));
+  assert.deepEqual(o.items.map(i => i.balance), [300, 600]);
+  // отмеченная оплата не попадает в план
+  planned[1].done_dates = ['2026-11-20'];
+  const p = payCalendar({ ops, planned, arts: A, objects: objs, accounts: accs, from: '2026-11', to: '2026-12', today: '2026-11-17' });
+  assert.equal(p.items.filter(i => i.plan_id === 11).length, 1);
+});
+
+test('платёжный календарь: счёт «не учитывать» исключается вместе с операциями и платежами', () => {
+  const A = [{ id: 1, name: 'Выручка', kind: 'income', dds_section: 'operating', opu_group: 'Выручка', sort: 1 }, { id: 2, name: 'ЗП', kind: 'expense', dds_section: 'operating', opu_group: 'Прямые расходы', sort: 2 }];
+  const accs = [{ id: 1, name: 'ИП', opening_balance: 100, opening_date: '2026-01-01' }, { id: 11, name: 'Мценск', opening_balance: 0, opening_date: '2026-01-01', in_calendar: false }];
+  const ops = [{ op_date: '2026-11-02', account_id: 11, article_id: 1, object_id: 3, amount: 2000 }, { op_date: '2026-11-03', account_id: 1, article_id: 2, object_id: 3, amount: 30 }];
+  const planned = [{ id: 1, plan_date: '2026-11-20', article_id: 2, object_id: 3, account_id: 11, amount: 5, recurrence: 'none', done_dates: [] }, { id: 2, plan_date: '2026-11-21', article_id: 2, object_id: 3, account_id: null, amount: 10, recurrence: 'none', done_dates: [] }];
+  const d = payCalendar({ ops, planned, arts: A, objects: [{ id: 3, name: 'X' }], accounts: accs, from: '2026-11', to: '2026-11', today: '2026-11-17' });
+  assert.equal(d.todayBalance, 70); assert.equal(d.closing, 60);
+  assert.deepEqual(d.items.map(i => i.amount), [30, 10]); assert.deepEqual(d.skipped.map(a => a.name), ['Мценск']);
 });
